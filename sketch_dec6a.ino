@@ -6,7 +6,7 @@
 
 // ---------- DISPLAY PINS ----------
 #define TFT_BL    16
-#define TFT_DC    37
+#define TFT_DC    19
 #define TFT_CS    39
 #define TFT_RST   38
 #define TFT_SCK   15
