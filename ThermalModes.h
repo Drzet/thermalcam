@@ -21,7 +21,7 @@ struct ModeConfig {
 // Mode configurations
 const ModeConfig MODE_CONFIGS[] = {
   {"Auto", -40.0f, 300.0f, true},    // MODE_AUTO
-  {"Body", 20.0f, 50.0f, false},     // MODE_BODY
+  {"Body", 30.0f, 45.0f, false},     // MODE_BODY
   {"Home", -20.0f, 100.0f, false}    // MODE_HOME
 };
 
@@ -31,8 +31,7 @@ const int NUM_MODES = 3;
 extern ThermalMode currentMode;
 
 // Button pins
-#define BUTTON_PIN_A 18  // INPUT_PULLUP - reads button state
-#define BUTTON_PIN_B 3   // OUTPUT LOW - completes circuit when button pressed
+#define BUTTON_PIN_A 3  // INPUT_PULLUP - reads button state
 
 // Button debounce
 #define DEBOUNCE_DELAY 50
