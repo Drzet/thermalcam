@@ -100,6 +100,7 @@ static bool wifiConnectToSavedNetworks() {
         if (WiFi.status() == WL_CONNECTED) {
             Serial.print("WiFi: connected, IP=");
             Serial.println(WiFi.localIP());
+            WiFi.setSleep(false);  // disable power save for better throughput
             return true;
         }
 

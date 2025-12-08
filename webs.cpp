@@ -1,13 +1,71 @@
 #include <Arduino.h>
 #include <WebServer.h>
 #include <WiFi.h>
+#include "driver/jpeg_encode.h"
 
 #include "ThermalModes.h"
 #include "webs.h"
 
+// ESP32-S3 hardware JPEG encoder wrapper for RGB565
+static jpeg_encoder_handle_t jpeg_encoder = nullptr;
+
+static bool encodeRGB565ToJPEG(uint16_t* rgb565, int w, int h, int quality, 
+                                uint8_t** out_jpg, size_t* out_size) {
+  // Initialize encoder on first use
+  if (!jpeg_encoder) {
+    jpeg_encode_engine_cfg_t enc_config = {
+      .intr_priority = 0,
+      .timeout_ms = 1000
+    };
+    esp_err_t ret = jpeg_new_encoder_engine(&enc_config, &jpeg_encoder);
+    if (ret != ESP_OK) {
+      Serial.printf("JPEG encoder init failed: %d\n", ret);
+      return false;
+    }
+    Serial.println("JPEG encoder initialized (HW accelerated)");
+  }
+
+  // Allocate output buffer (estimate 1/10 of input size for quality 80)
+  size_t outbuf_size = (w * h * 2) / 5;  // conservative estimate
+  uint8_t* outbuf = (uint8_t*)ps_malloc(outbuf_size);
+  if (!outbuf) {
+    return false;
+  }
+
+  // Configure encoding
+  jpeg_encode_cfg_t enc_cfg = {
+    .height = (uint32_t)h,
+    .width = (uint32_t)w,
+    .src_type = JPEG_ENCODE_IN_FORMAT_RGB565,
+    .sub_sample = JPEG_DOWN_SAMPLING_YUV420,  // standard 4:2:0 chroma subsampling
+    .image_quality = (uint32_t)quality
+  };
+
+  uint32_t encoded_size = 0;
+  esp_err_t ret = jpeg_encoder_process(
+    jpeg_encoder,
+    &enc_cfg,
+    (const uint8_t*)rgb565,
+    w * h * 2,  // RGB565 is 2 bytes per pixel
+    outbuf,
+    outbuf_size,
+    &encoded_size
+  );
+
+  if (ret != ESP_OK || encoded_size == 0) {
+    free(outbuf);
+    return false;
+  }
+
+  *out_jpg = outbuf;
+  *out_size = encoded_size;
+  return true;
+}
+
 // Frame buffer and temperature range are defined in the main sketch
-extern uint16_t* frameBuffer;
-extern SemaphoreHandle_t frameMutex;
+extern uint16_t* readyBuffer;  // buffer ready for encoding (double-buffered)
+extern SemaphoreHandle_t frameReadySem;
+extern SemaphoreHandle_t frameFreeSem;
 extern float frameMin;
 extern float frameMax;
 
@@ -17,6 +75,7 @@ static int g_viewW = 0;
 static int g_viewH = 0;
 
 static void handleSnapshot();
+static void handleStream();
 static void handleStatus();
 static void handleModeApi();
 
@@ -45,7 +104,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
 <body>
   <div id="container">
     <div id="left">
-      <img id="stream" src="/snapshot" width="384" height="288" alt="Thermal stream">
+      <img id="stream" src="/stream" width="384" height="288" alt="Thermal stream">
     </div>
     <div id="right">
       <div>
@@ -66,7 +125,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
           const url = URL.createObjectURL(blob);
           const a = document.createElement('a');
           a.href = url;
-          a.download = 'thermal_frame.bmp';
+          a.download = 'thermal_frame.jpg';
           document.body.appendChild(a);
           a.click();
           a.remove();
@@ -110,17 +169,9 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
       if (el) el.textContent = 'Status: ' + text;
     }
 
-    function refreshStream() {
-      var img = document.getElementById('stream');
-      if (!img) return;
-      img.src = '/snapshot?ts=' + Date.now();
-    }
-
     setInterval(refreshStatus, 3000);
-    setInterval(refreshStream, 200);
     window.addEventListener('load', function() {
       refreshStatus();
-      refreshStream();
     });
   </script>
 </body>
@@ -140,6 +191,7 @@ void websBegin(int viewW, int viewH) {
   });
 
   webServer.on("/snapshot", []() { handleSnapshot(); });
+  webServer.on("/stream", []() { handleStream(); });
   webServer.on("/api/status", []() { handleStatus(); });
   webServer.on("/api/mode", []() { handleModeApi(); });
 
@@ -154,111 +206,124 @@ void websHandle() {
 }
 
 static void handleSnapshot() {
-  if (!frameBuffer || g_viewW <= 0 || g_viewH <= 0) {
-    webServer.send(500, "text/plain", "No frame buffer");
+  if (!readyBuffer || g_viewW <= 0 || g_viewH <= 0) {
+    webServer.send(500, "text/plain", "No frame ready");
+    return;
+  }
+
+  // Try to get access to the ready buffer (non-blocking)
+  if (xSemaphoreTake(frameReadySem, pdMS_TO_TICKS(100)) != pdTRUE) {
+    webServer.send(503, "text/plain", "Frame busy, retry");
     return;
   }
 
   const int w = g_viewW;
   const int h = g_viewH;
-  const int bytesPerPixel = 3; // 24-bit BMP
-  const int rowSize = ((bytesPerPixel * w + 3) / 4) * 4; // 4-byte aligned
-  const uint32_t dataSize = rowSize * h;
-  const uint32_t fileSize = 54 + dataSize;
 
-  uint8_t* bmp = (uint8_t*)ps_malloc(fileSize);
-  if (!bmp) {
-    webServer.send(500, "text/plain", "No memory for BMP");
+  // Encode RGB565 to JPEG
+  uint8_t* jpgBuf = nullptr;
+  size_t jpgSize = 0;
+  bool ok = encodeRGB565ToJPEG(
+    readyBuffer, w, h,
+    80,  // quality 0-100
+    &jpgBuf, &jpgSize
+  );
+
+  // Release buffer for core 1 to continue
+  xSemaphoreGive(frameFreeSem);
+
+  if (!ok || !jpgBuf || jpgSize == 0) {
+    webServer.send(500, "text/plain", "JPEG encode failed");
     return;
   }
-
-  if (xSemaphoreTake(frameMutex, portMAX_DELAY) != pdTRUE) {
-    free(bmp);
-    webServer.send(503, "text/plain", "Frame wait failed");
-    return;
-  }
-
-  // BMP header
-  bmp[0] = 'B'; bmp[1] = 'M';
-  bmp[2] = (uint8_t)(fileSize & 0xFF);
-  bmp[3] = (uint8_t)((fileSize >> 8) & 0xFF);
-  bmp[4] = (uint8_t)((fileSize >> 16) & 0xFF);
-  bmp[5] = (uint8_t)((fileSize >> 24) & 0xFF);
-  bmp[6] = bmp[7] = bmp[8] = bmp[9] = 0;
-  const uint32_t dataOffset = 54;
-  bmp[10] = (uint8_t)(dataOffset & 0xFF);
-  bmp[11] = (uint8_t)((dataOffset >> 8) & 0xFF);
-  bmp[12] = (uint8_t)((dataOffset >> 16) & 0xFF);
-  bmp[13] = (uint8_t)((dataOffset >> 24) & 0xFF);
-
-  // DIB header (BITMAPINFOHEADER)
-  const uint32_t dibSize = 40;
-  bmp[14] = (uint8_t)(dibSize & 0xFF);
-  bmp[15] = (uint8_t)((dibSize >> 8) & 0xFF);
-  bmp[16] = (uint8_t)((dibSize >> 16) & 0xFF);
-  bmp[17] = (uint8_t)((dibSize >> 24) & 0xFF);
-
-  bmp[18] = (uint8_t)(w & 0xFF);
-  bmp[19] = (uint8_t)((w >> 8) & 0xFF);
-  bmp[20] = (uint8_t)((w >> 16) & 0xFF);
-  bmp[21] = (uint8_t)((w >> 24) & 0xFF);
-
-  bmp[22] = (uint8_t)(h & 0xFF);
-  bmp[23] = (uint8_t)((h >> 8) & 0xFF);
-  bmp[24] = (uint8_t)((h >> 16) & 0xFF);
-  bmp[25] = (uint8_t)((h >> 24) & 0xFF);
-
-  bmp[26] = 1; bmp[27] = 0;          // planes
-  bmp[28] = 24; bmp[29] = 0;         // bits per pixel
-  bmp[30] = 0; bmp[31] = bmp[32] = bmp[33] = 0;  // compression = BI_RGB
-
-  bmp[34] = (uint8_t)(dataSize & 0xFF);
-  bmp[35] = (uint8_t)((dataSize >> 8) & 0xFF);
-  bmp[36] = (uint8_t)((dataSize >> 16) & 0xFF);
-  bmp[37] = (uint8_t)((dataSize >> 24) & 0xFF);
-
-  // pixels per meter (dummy)
-  bmp[38] = bmp[39] = bmp[40] = bmp[41] = 0;
-  bmp[42] = bmp[43] = bmp[44] = bmp[45] = 0;
-
-  // colors used / important (0 = all)
-  bmp[46] = bmp[47] = bmp[48] = bmp[49] = 0;
-  bmp[50] = bmp[51] = bmp[52] = bmp[53] = 0;
-
-  // Pixel data: bottom-up BGR24
-  uint8_t* pixelBase = bmp + 54;
-  for (int y = 0; y < h; ++y) {
-    int srcY = h - 1 - y; // BMP bottom row first
-    uint8_t* rowPtr = pixelBase + y * rowSize;
-
-    for (int x = 0; x < w; ++x) {
-      uint16_t pix = frameBuffer[srcY * w + x];
-      uint8_t r = ((pix >> 11) & 0x1F) * 255 / 31;
-      uint8_t g = ((pix >> 5) & 0x3F) * 255 / 63;
-      uint8_t b = (pix & 0x1F) * 255 / 31;
-      rowPtr[x * 3 + 0] = b;
-      rowPtr[x * 3 + 1] = g;
-      rowPtr[x * 3 + 2] = r;
-    }
-    for (int p = w * bytesPerPixel; p < rowSize; ++p) {
-      rowPtr[p] = 0;
-    }
-  }
-
-  xSemaphoreGive(frameMutex);
 
   WiFiClient client = webServer.client();
   if (!client) {
-    free(bmp);
+    free(jpgBuf);
     return;
   }
 
-  webServer.setContentLength(fileSize);
-  webServer.send(200, "image/bmp", "");
-  client.write(bmp, fileSize);
+  webServer.setContentLength(jpgSize);
+  webServer.send(200, "image/jpeg", "");
+
+  // Chunked send with yields to keep system responsive
+  const size_t chunkSize = 2048;
+  size_t sent = 0;
+  while (sent < jpgSize) {
+    size_t toSend = (jpgSize - sent > chunkSize) ? chunkSize : (jpgSize - sent);
+    client.write(jpgBuf + sent, toSend);
+    sent += toSend;
+    delay(0);  // yield to other tasks
+  }
   client.flush();
 
-  free(bmp);
+  free(jpgBuf);
+}
+
+static void handleStream() {
+  if (!readyBuffer || g_viewW <= 0 || g_viewH <= 0) {
+    webServer.send(500, "text/plain", "No frame ready");
+    return;
+  }
+
+  WiFiClient client = webServer.client();
+  if (!client) {
+    return;
+  }
+
+  const int w = g_viewW;
+  const int h = g_viewH;
+
+  // Send multipart MJPEG header
+  webServer.setContentLength(CONTENT_LENGTH_UNKNOWN);
+  webServer.send(200, "multipart/x-mixed-replace; boundary=frame", "");
+
+  while (client.connected()) {
+    // Wait for a new frame to be ready
+    if (xSemaphoreTake(frameReadySem, pdMS_TO_TICKS(200)) != pdTRUE) {
+      continue;  // timeout, retry
+    }
+
+    // Encode to JPEG
+    uint8_t* jpgBuf = nullptr;
+    size_t jpgSize = 0;
+    bool ok = encodeRGB565ToJPEG(
+      readyBuffer, w, h,
+      80,  // quality
+      &jpgBuf, &jpgSize
+    );
+
+    // Release buffer immediately for core 1
+    xSemaphoreGive(frameFreeSem);
+
+    if (!ok || !jpgBuf || jpgSize == 0) {
+      delay(10);
+      continue;
+    }
+
+    // Send multipart boundary + headers
+    client.print("--frame\r\n");
+    client.print("Content-Type: image/jpeg\r\n");
+    client.printf("Content-Length: %u\r\n\r\n", jpgSize);
+
+    // Send JPEG data in chunks with yields
+    const size_t chunkSize = 2048;
+    size_t sent = 0;
+    while (sent < jpgSize && client.connected()) {
+      size_t toSend = (jpgSize - sent > chunkSize) ? chunkSize : (jpgSize - sent);
+      client.write(jpgBuf + sent, toSend);
+      sent += toSend;
+      delay(0);
+    }
+
+    client.print("\r\n");
+    client.flush();
+
+    free(jpgBuf);
+
+    // Small delay between frames
+    delay(10);
+  }
 }
 
 static void handleStatus() {
