@@ -1,0 +1,3 @@
+dependencies:
+  idf: "==5.5.1"
+  espressif/usb_device_uvc: "==1.3.1"

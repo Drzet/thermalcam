@@ -1,0 +1,171 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <assert.h>
+#include <string.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/semphr.h"
+#include "esp_heap_caps.h"
+#include "esp_log.h"
+#include "esp_timer.h"
+#include "driver/gpio.h"
+#include "driver/jpeg_encode.h"
+#include "usb_device_uvc.h"
+#include "thermal.h"
+#include "sensor.h"
+#include "board.h"
+
+#define JPEG_CAPACITY (IMAGE_BYTES)
+static const char *TAG="thermalcam";
+static SemaphoreHandle_t state_lock,jpeg_lock;
+static thermal_frame_t latest,held;
+static thermal_mode_t mode;
+static bool frozen,acquisition_error=true;
+static uvc_fb_t published;
+static uint8_t *rgb,*encoded;
+static size_t rgb_capacity,jpeg_capacity;
+static jpeg_encoder_handle_t encoder;
+
+static void sensor_task(void *arg)
+{
+    (void)arg;
+    thermal_frame_t *candidate=calloc(1,sizeof(*candidate));
+    assert(candidate);
+    bool configured=false;
+    unsigned consecutive_errors=0;
+    uint32_t sequence=0;
+    for(;;) {
+        if(!configured) {
+            int rc=sensor_configure();
+            if(rc) { ESP_LOGW(TAG,"Sensor configuration failed (%d); retrying",rc);
+                vTaskDelay(pdMS_TO_TICKS(1000)); continue; }
+            configured=true;
+            ESP_LOGI(TAG,"MLX90640 configured: 18-bit, 8 subpages/s, 400 kHz I2C");
+        }
+        bool ok=sensor_capture(candidate);
+        xSemaphoreTake(state_lock,portMAX_DELAY);
+        acquisition_error=!ok;
+        if(ok) { candidate->sequence=++sequence; latest=*candidate; }
+        xSemaphoreGive(state_lock);
+        if(ok) consecutive_errors=0;
+        else {
+            if(++consecutive_errors>=3) { configured=false; consecutive_errors=0; }
+            ESP_LOGW(TAG,"Frame rejected; keeping last valid frame");
+            vTaskDelay(pdMS_TO_TICKS(100));
+        }
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
+}
+
+static void input_action(bool freeze)
+{
+    xSemaphoreTake(state_lock,portMAX_DELAY);
+    if(freeze) {
+        if(frozen) frozen=false;
+        else if(latest.valid) { held=latest; frozen=true; }
+    } else mode=(mode+1)%MODE_COUNT;
+    xSemaphoreGive(state_lock);
+}
+static void input_task(void *arg)
+{
+    (void)arg;
+    bool last=false,stable=false,touch_last=false,touch_stable=false;
+    int64_t changed=0,touch_changed=0;
+    int tx=0,ty=0;
+    for(;;) {
+        int64_t now=esp_timer_get_time();
+        bool down=!gpio_get_level(PIN_BUTTON);
+        if(down!=last) { last=down; changed=now; }
+        if(now-changed>=50000 && stable!=down) { stable=down; if(down) input_action(false); }
+        int x,y;
+        bool pressed=board_touch(&x,&y);
+        if(pressed) { tx=x; ty=y; }
+        if(pressed!=touch_last) { touch_last=pressed; touch_changed=now; }
+        if(now-touch_changed>=50000 && touch_stable!=pressed) {
+            touch_stable=pressed;
+            if(pressed && ty>=0 && ty<32) {
+                if(tx>=0 && tx<120) input_action(true);
+                else if(tx>=360 && tx<480) input_action(false);
+            }
+        }
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+}
+
+static esp_err_t stream_start(uvc_format_t fmt,int w,int h,int rate,void *ctx)
+{
+    (void)ctx;
+    if(fmt!=UVC_FORMAT_JPEG || w!=IMAGE_W || h!=IMAGE_H || rate!=4)
+        return ESP_ERR_NOT_SUPPORTED;
+    ESP_LOGI(TAG,"UVC started: %dx%d at %d fps",w,h,rate);
+    return ESP_OK;
+}
+static void stream_stop(void *ctx) { (void)ctx; ESP_LOGI(TAG,"UVC stopped"); }
+static uvc_fb_t *stream_get(void *ctx)
+{
+    (void)ctx;
+    if(xSemaphoreTake(jpeg_lock,pdMS_TO_TICKS(20))!=pdTRUE) return NULL;
+    if(!published.len) { xSemaphoreGive(jpeg_lock); return NULL; }
+    /* Driver copies to its own transfer buffer, then immediately calls return. */
+    return &published;
+}
+static void stream_return(uvc_fb_t *fb,void *ctx)
+{
+    (void)fb; (void)ctx; xSemaphoreGive(jpeg_lock);
+}
+
+void app_main(void)
+{
+    state_lock=xSemaphoreCreateMutex(); jpeg_lock=xSemaphoreCreateMutex();
+    assert(state_lock && jpeg_lock);
+    jpeg_encode_memory_alloc_cfg_t input={.buffer_direction=JPEG_ENC_ALLOC_INPUT_BUFFER};
+    jpeg_encode_memory_alloc_cfg_t output={.buffer_direction=JPEG_ENC_ALLOC_OUTPUT_BUFFER};
+    rgb=jpeg_alloc_encoder_mem(IMAGE_BYTES,&input,&rgb_capacity);
+    encoded=jpeg_alloc_encoder_mem(JPEG_CAPACITY,&output,&jpeg_capacity);
+    published.buf=heap_caps_malloc(JPEG_CAPACITY,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+    uint8_t *transfer_buffer=heap_caps_malloc(JPEG_CAPACITY,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+    assert(rgb && encoded && published.buf && transfer_buffer);
+    published.width=IMAGE_W; published.height=IMAGE_H; published.format=UVC_FORMAT_JPEG;
+    jpeg_encode_engine_cfg_t engine_cfg={.timeout_ms=200};
+    ESP_ERROR_CHECK(jpeg_new_encoder_engine(&engine_cfg,&encoder));
+    ESP_ERROR_CHECK(board_init());
+    ESP_ERROR_CHECK(sensor_bus_init());
+    uvc_device_config_t uvc={.uvc_buffer=transfer_buffer,.uvc_buffer_size=JPEG_CAPACITY,
+        .start_cb=stream_start,.stop_cb=stream_stop,.fb_get_cb=stream_get,.fb_return_cb=stream_return};
+    ESP_ERROR_CHECK(uvc_device_config(0,&uvc));
+    ESP_ERROR_CHECK(uvc_device_init());
+    BaseType_t task_ok=xTaskCreate(sensor_task,"sensor",12288,NULL,5,NULL);
+    ESP_ERROR_CHECK(task_ok==pdPASS?ESP_OK:ESP_ERR_NO_MEM);
+    task_ok=xTaskCreate(input_task,"input",4096,NULL,4,NULL);
+    ESP_ERROR_CHECK(task_ok==pdPASS?ESP_OK:ESP_ERR_NO_MEM);
+    thermal_frame_t *view=calloc(1,sizeof(*view)); assert(view);
+    jpeg_encode_cfg_t cfg={.width=IMAGE_W,.height=IMAGE_H,.src_type=JPEG_ENCODE_IN_FORMAT_RGB888,
+        .sub_sample=JPEG_DOWN_SAMPLING_YUV444,.image_quality=80};
+    TickType_t next=xTaskGetTickCount();
+    for(;;) {
+        bool hold,fault; thermal_mode_t active_mode;
+        xSemaphoreTake(state_lock,portMAX_DELAY);
+        hold=frozen; fault=acquisition_error; active_mode=mode; *view=hold?held:latest;
+        xSemaphoreGive(state_lock);
+        int64_t age=view->valid?(esp_timer_get_time()-view->captured_us)/1000:0;
+        bool stale=!hold && (fault || age>1000);
+        thermal_render(rgb,view,active_mode,hold,stale,age>UINT32_MAX?UINT32_MAX:(uint32_t)age);
+        uint32_t bytes=0;
+        esp_err_t e=jpeg_encoder_process(encoder,&cfg,rgb,IMAGE_BYTES,encoded,jpeg_capacity,&bytes);
+        if(e==ESP_OK && bytes>0 && bytes<=JPEG_CAPACITY) {
+            xSemaphoreTake(jpeg_lock,portMAX_DELAY);
+            memcpy(published.buf,encoded,bytes); published.len=bytes;
+            int64_t now=esp_timer_get_time();
+            published.timestamp.tv_sec=now/1000000;
+            published.timestamp.tv_usec=now%1000000;
+            xSemaphoreGive(jpeg_lock);
+        } else {
+            /* Never silently keep serving old video if encoding fails. */
+            xSemaphoreTake(jpeg_lock,portMAX_DELAY); published.len=0; xSemaphoreGive(jpeg_lock);
+            ESP_LOGE(TAG,"JPEG failed: %s, %lu bytes",esp_err_to_name(e),(unsigned long)bytes);
+        }
+        e=board_draw(rgb);
+        if(e!=ESP_OK) ESP_LOGE(TAG,"LCD write failed: %s",esp_err_to_name(e));
+        vTaskDelayUntil(&next,pdMS_TO_TICKS(250));
+    }
+}
