@@ -43,9 +43,10 @@ your connected board. No board was flashed during development.
 ## Behaviour
 
 - Advertises only **480×320 MJPEG at 4 fps**. The sensor is configured for
-  8 subpages/s; a complete thermal frame needs both subpages. The 4 fps USB
-  presentation rate is not a promise of four distinct measured frames each
-  second; measured age is displayed.
+  32 subpages/s; a complete thermal frame needs both subpages (up to 16
+  complete thermal frames/s). The 4 fps USB presentation rate is independent
+  of acquisition, and does not represent measured sensor throughput. The
+  firmware logs actual completed acquisition fps every five seconds.
 - The thermal view remains 384×288, interpolated from 32×24 measurements.
   Upscaling does not add thermal resolution. The original cold-white/hot-black
   palette is retained.
@@ -63,9 +64,11 @@ your connected board. No board was flashed during development.
 ## Acquisition and concurrency
 
 The sensor task owns the I2C bus and Melexis calibration state. It verifies
-configuration readback and waits for both subpages with a 750 ms deadline,
-yielding while waiting. Failed or overlapped reads never replace the last valid
-frame. Three consecutive acquisition errors trigger sensor reinitialization;
+configuration readback and waits for two consecutive, opposite subpages with
+a 750 ms deadline, yielding while waiting. The sensor uses interleaved (TV)
+mode and reads only the twelve newly updated 32-pixel rows per subpage; the
+64 auxiliary words are still read and validated. Repeated, tardy or overlapped
+subpages never replace the last valid frame. Three consecutive acquisition errors trigger sensor reinitialization;
 a missing sensor is retried once per second without stopping USB/UI.
 
 Factory bad pixels are invalidated before correction. At most four invalid
@@ -103,12 +106,15 @@ undefined-behaviour checks remain enabled.
 1. Confirm chip revision, GPIO wiring, HUSB/FUSB routing and button wiring.
 2. Open the UVC device on the intended host; verify negotiated 480×320 MJPEG,
    correct colours, temperatures and age updating.
-3. Press/release and hold the button: one mode change per press. Verify
+3. Check the serial `Acquisition` reports: verify sustained fresh thermal fps,
+   rejection count and maximum acquisition duration separately from 4 fps UVC.
+   The 16 full fps rate is a theoretical upper bound, not hardware-verified.
+4. Press/release and hold the button: one mode change per press. Verify
    the mode persists across USB disconnect/reconnect.
-4. Disconnect the sensor: stale/no-sensor indication must appear, input and USB
+5. Disconnect the sensor: stale/no-sensor indication must appear, input and USB
    must remain responsive. Reconnect and verify recovery.
-5. Close/reopen the host video application and unplug/replug USB repeatedly.
-6. Compare temperature readings with the previous implementation on the same
+6. Close/reopen the host video application and unplug/replug USB repeatedly.
+7. Compare temperature readings with the previous implementation on the same
    scene and check that actual fresh-frame cadence is acceptable.
 
 See `third_party/NOTICE.md` and `components/mlx90640/UPSTREAM.md` for provenance.
