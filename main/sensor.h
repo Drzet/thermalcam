@@ -14,4 +14,9 @@ typedef struct {
     unsigned opposite_ready; /* Ready flag set by following subpage while reading. */
     int last_page;
 } sensor_diag_t;
-bool sensor_capture(thermal_frame_t *out, sensor_diag_t *diag);
+typedef struct {
+    uint16_t raw[2][834];  /* Consecutive opposite subpages, in capture order. */
+    int64_t captured_us;
+} sensor_pair_t;
+bool sensor_capture(sensor_pair_t *out, sensor_diag_t *diag);
+bool sensor_process(const sensor_pair_t *pair, thermal_frame_t *out, uint32_t *calculation_us);
