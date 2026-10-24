@@ -198,6 +198,7 @@ void app_main(void)
     published.buf=heap_caps_malloc(JPEG_CAPACITY,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
     uint8_t *transfer_buffer=heap_caps_malloc(JPEG_CAPACITY,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
     assert(rgb && encoded && published.buf && transfer_buffer);
+    thermal_init();
     published.width=IMAGE_W; published.height=IMAGE_H; published.format=UVC_FORMAT_JPEG;
     jpeg_encode_engine_cfg_t engine_cfg={.timeout_ms=200};
     ESP_ERROR_CHECK(jpeg_new_encoder_engine(&engine_cfg,&encoder));
