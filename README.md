@@ -7,9 +7,9 @@ The original S3 implementation remains in Git history and on main.
 
 ## Hardware and build baseline
 
-- ESP-IDF **v5.5.1**, target **esp32p4**. This SDK supports P4 revisions v0.1
-  through v1.99 with the supplied defaults; **P4X/revision v3.x is not supported
-  by this build**. Confirm the board revision before flashing.
+- Experimental branch uses **ESP-IDF v6.0.3**, target **esp32p4**,
+  matching the verified running P4 build. It relies on the v6.0.3
+  `esp_driver_i3c` legacy-I2C API.
 - The flash layout uses 2 MiB; this is a build setting, not a measurement of the board capacity.
 - PSRAM required. Configured for 80 MHz; capacity is detected at boot.
 - `espressif/usb_device_uvc` **1.3.1**; transitive dependencies pinned by
@@ -17,8 +17,12 @@ The original S3 implementation remains in Git history and on main.
 - UVC uses the **high-speed USB OTG port**; the separate USB Serial/JTAG
   controller is the console. On WT9932P4-TINY use HUSB for video, FUSB for
   flashing/debugging, after confirming these labels against your board revision.
-- Sensor I2C: **400 kHz**, within the
-  sensor specification; external I2C pull-ups are still required.
+- **Experimental sensor transport:** P4 I3C master in legacy 7-bit I2C
+  mode at **1 MHz** for RAM/register traffic and **400 kHz** for EEPROM.
+  Uses the same GPIO41 SDA / GPIO42 SCL; no wiring change in software.
+  The I3C legacy-I2C driver does not support clock-stretching slaves.
+  GPIO41/42 have no dedicated I3C programmable pull-ups, so adequate
+  external pull-ups are necessary for 1 MHz.
 
 The previous GPIO assignments are retained by user instruction, not inferred
 from a board pinout. All assignments are in `main/camera_pins.h`:
@@ -30,7 +34,7 @@ from a board pinout. All assignments are in `main/camera_pins.h`:
 
 ## Build
 
-With the ESP-IDF v5.5.1 environment activated:
+With the ESP-IDF v6.0.3 environment activated:
 
 ```sh
 idf.py set-target esp32p4
@@ -42,12 +46,13 @@ your connected board. No board was flashed during development.
 
 ## Behaviour
 
-- Advertises **480×320 MJPEG at 16 fps**, matching the upper bound for
-  32 sensor subpages/s (two subpages per complete 32×24 thermal measurement).
+- Advertises **480×320 MJPEG at 32 fps**, matching the theoretical upper
+  bound for 64 sensor subpages/s (two subpages per complete 32×24 thermal measurement).
   USB presentation rate is distinct from the rate of fresh thermal frames;
   any shortage is visible in the five-second acquisition statistics.
   Existing local `sdkconfig` files must be regenerated or adjusted after
-  changing `sdkconfig.defaults` to ensure the UVC descriptor changes.
+  changing `sdkconfig.defaults` to ensure the UVC descriptor changes
+  (`CONFIG_UVC_CAM1_FRAMERATE=32`).
 - The thermal view remains 384×288, interpolated from 32×24 measurements.
   Upscaling does not add thermal resolution. The original cold-white/hot-black
   palette is retained.
@@ -64,7 +69,9 @@ your connected board. No board was flashed during development.
 
 ## Acquisition and concurrency
 
-The sensor task owns the I2C bus and configuration. It verifies
+The sensor task owns the I3C legacy-I2C bus and configuration. It switches
+to the 400 kHz handle before every EEPROM dump, then to the 1 MHz handle
+after sensor configuration and a fast-register readback. It verifies
 configuration readback and waits for two consecutive, opposite subpages with
 a 750 ms deadline, yielding while waiting. The sensor uses interleaved (TV)
 mode and reads only the twelve newly updated 32-pixel rows per subpage; the
@@ -113,15 +120,37 @@ An optional argument writes a PPM preview. In containers where LeakSanitizer
 cannot inspect `/proc`, run with `ASAN_OPTIONS=detect_leaks=0`; address and
 undefined-behaviour checks remain enabled.
 
+## Experimental 1 MHz / 64 Hz qualification
+
+This branch is NOT the known-good 400 kHz / 32 Hz configuration. The latter
+is preserved at `feature/p4-usb-thermal-camera` (15.6 fps, 0 rejects/drops
+measured). No hardware test of the new I3C transport has yet been performed.
+
+1. Verify the selected ESP-IDF version is 6.0.3 and set the local `sdkconfig`
+   UVC frame rate to 32 (or regenerate it), then rebuild.
+2. On boot, EEPROM and configuration are accessed at 400 kHz; register/RAM
+   reads switch to 1 MHz. Check the startup log and the first acquisition
+   lines for transport failures and rejected pairs.
+3. Record three consecutive five-second `Acquisition` reports: sustained
+   **fresh** complete fps, rejected frames, queue drops, maximum raw-pair read
+   time and maximum calculation time. At 64 Hz, 32 complete fps is the
+   theoretical ceiling, not a promise.
+4. Check image correctness and USB video independently. Existing Android
+   clients may report display FPS rather than fresh sensor frames.
+5. If the experimental build cannot communicate with the sensor, switch back
+   to the known-good branch. Do not change wiring solely based on a failed
+   1 MHz attempt; first establish the electrical timing with a scope or
+   logic analyser.
+
 ## Hardware acceptance checks
 
 1. Confirm chip revision, GPIO wiring, HUSB/FUSB routing and button wiring.
-2. Open the UVC device on the intended host; verify negotiated 480×320 MJPEG at 16 fps,
+2. Open the UVC device on the intended host; verify negotiated 480×320 MJPEG at 32 fps,
    correct colours, temperatures and age updating.
 3. Check the serial `Acquisition` reports: verify sustained fresh thermal fps,
    rejection count, dropped-pair count and maximum pair-read/calculation duration
-   separately from the advertised 16 fps UVC output.
-   The 16 full fps rate is a theoretical upper bound, not hardware-verified.
+   separately from the advertised 32 fps UVC output.
+   The 32 full fps rate is a theoretical upper bound, not hardware-verified.
 4. Press/release and hold the button: one mode change per press. Verify
    the mode persists across USB disconnect/reconnect.
 5. Disconnect the sensor: stale/no-sensor indication must appear, input and USB
