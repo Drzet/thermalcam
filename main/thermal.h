@@ -14,6 +14,8 @@ typedef struct {
     bool valid;
 } thermal_frame_t;
 typedef enum { MODE_AUTO, MODE_BODY, MODE_HOME, MODE_COUNT } thermal_mode_t;
+/* Initialise the original main-branch interpolation maps and colour table. */
+void thermal_init(void);
 bool thermal_validate(const float *input, thermal_frame_t *output);
 void thermal_range(const thermal_frame_t *frame, thermal_mode_t mode, float *lo, float *hi);
 /* BGR888 byte order: matches the P4 JPEG encoder's native RGB888 layout. */
