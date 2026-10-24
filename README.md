@@ -42,11 +42,12 @@ your connected board. No board was flashed during development.
 
 ## Behaviour
 
-- Advertises only **480×320 MJPEG at 4 fps**. The sensor is configured for
-  32 subpages/s; a complete thermal frame needs both subpages (up to 16
-  complete thermal frames/s). The 4 fps USB presentation rate is independent
-  of acquisition, and does not represent measured sensor throughput. The
-  firmware logs actual completed acquisition fps every five seconds.
+- Advertises **480×320 MJPEG at 16 fps**, matching the upper bound for
+  32 sensor subpages/s (two subpages per complete 32×24 thermal measurement).
+  USB presentation rate is distinct from the rate of fresh thermal frames;
+  any shortage is visible in the five-second acquisition statistics.
+  Existing local `sdkconfig` files must be regenerated or adjusted after
+  changing `sdkconfig.defaults` to ensure the UVC descriptor changes.
 - The thermal view remains 384×288, interpolated from 32×24 measurements.
   Upscaling does not add thermal resolution. The original cold-white/hot-black
   palette is retained.
@@ -63,7 +64,7 @@ your connected board. No board was flashed during development.
 
 ## Acquisition and concurrency
 
-The sensor task owns the I2C bus and Melexis calibration state. It verifies
+The sensor task owns the I2C bus and configuration. It verifies
 configuration readback and waits for two consecutive, opposite subpages with
 a 750 ms deadline, yielding while waiting. The sensor uses interleaved (TV)
 mode and reads only the twelve newly updated 32-pixel rows per subpage; the
@@ -71,10 +72,15 @@ mode and reads only the twelve newly updated 32-pixel rows per subpage; the
 subpages never replace the last valid frame. The acquisition path accepts a
 newly ready *opposite* subpage after the current pixel read because the two
 subpages use disjoint rows in TV mode. It rejects a same-subpage overwrite.
-Auxiliary words are read before the pixel rows. The five-second log reports
-measured full-frame fps, rejected frames, maximum read/calculation time, and
-the count of opposite subpages becoming ready during readout. Three consecutive acquisition errors trigger sensor reinitialization;
+Auxiliary words are read before the pixel rows. The I2C task copies each
+complete raw subpage pair into a nonblocking queue and immediately resumes
+readout. A separate calculation task processes radiometric temperatures, checks
+pixels and publishes fresh frames. A queue overflow discards a raw pair; it
+never stalls the I2C task. Repeated or missed subpages do not reconfigure the
+sensor. Three consecutive I2C/control failures do trigger reconfiguration;
 a missing sensor is retried once per second without stopping USB/UI.
+The five-second log reports completed full-frame fps, rejected pairs, queue
+drops, maximum pair-read time and calculation time.
 
 Factory bad pixels are invalidated before correction. At most four invalid
 pixels are repaired, using only finite neighbours from the original frame.
@@ -85,7 +91,8 @@ Emissivity remains **0.95**, with reflected temperature estimated as sensor
 ambient minus **8°C**, matching the Adafruit calculation previously used.
 Body mode changes the colour scale only, not calibration or emissivity.
 
-Acquisition, input and rendering are independent tasks. Rendering takes a short
+Acquisition, temperature calculation, input and rendering are independent tasks.
+Rendering takes a short
 snapshot of shared state, produces BGR888 in JPEG-compatible memory, encodes
 with the P4 hardware encoder, then publishes a complete JPEG under a mutex.
 The UVC driver copies the published JPEG before releasing it; it never holds
@@ -109,10 +116,11 @@ undefined-behaviour checks remain enabled.
 ## Hardware acceptance checks
 
 1. Confirm chip revision, GPIO wiring, HUSB/FUSB routing and button wiring.
-2. Open the UVC device on the intended host; verify negotiated 480×320 MJPEG,
+2. Open the UVC device on the intended host; verify negotiated 480×320 MJPEG at 16 fps,
    correct colours, temperatures and age updating.
 3. Check the serial `Acquisition` reports: verify sustained fresh thermal fps,
-   rejection count and maximum acquisition duration separately from 4 fps UVC.
+   rejection count, dropped-pair count and maximum pair-read/calculation duration
+   separately from the advertised 16 fps UVC output.
    The 16 full fps rate is a theoretical upper bound, not hardware-verified.
 4. Press/release and hold the button: one mode change per press. Verify
    the mode persists across USB disconnect/reconnect.
