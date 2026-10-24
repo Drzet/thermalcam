@@ -11,6 +11,7 @@ typedef struct {
     uint32_t calculate_us;
     uint32_t page_gap_us;    /* Between completed subpage reads. */
     unsigned attempts;
+    unsigned opposite_ready; /* Ready flag set by following subpage while reading. */
     int last_page;
 } sensor_diag_t;
 bool sensor_capture(thermal_frame_t *out, sensor_diag_t *diag);
