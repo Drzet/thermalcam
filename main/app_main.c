@@ -156,7 +156,7 @@ static void button_task(void *arg)
 static esp_err_t stream_start(uvc_format_t fmt,int w,int h,int rate,void *ctx)
 {
     (void)ctx;
-    if(fmt!=UVC_FORMAT_JPEG || w!=IMAGE_W || h!=IMAGE_H || rate!=4)
+    if(fmt!=UVC_FORMAT_JPEG || w!=IMAGE_W || h!=IMAGE_H || rate!=16)
         return ESP_ERR_NOT_SUPPORTED;
     ESP_LOGI(TAG,"UVC started: %dx%d at %d fps",w,h,rate);
     return ESP_OK;
@@ -230,6 +230,6 @@ void app_main(void)
             xSemaphoreTake(jpeg_lock,portMAX_DELAY); published.len=0; xSemaphoreGive(jpeg_lock);
             ESP_LOGE(TAG,"JPEG failed: %s, %lu bytes",esp_err_to_name(e),(unsigned long)bytes);
         }
-        vTaskDelayUntil(&next,pdMS_TO_TICKS(250));
+        vTaskDelayUntil(&next,pdMS_TO_TICKS(1000/16));
     }
 }
