@@ -5,6 +5,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
+#include "freertos/queue.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -18,6 +19,7 @@
 #define JPEG_CAPACITY (IMAGE_BYTES)
 static const char *TAG="thermalcam";
 static SemaphoreHandle_t state_lock,jpeg_lock;
+static QueueHandle_t capture_queue;
 static thermal_frame_t latest;
 static thermal_mode_t mode;
 static bool acquisition_error=true;
@@ -26,60 +28,107 @@ static uint8_t *rgb,*encoded;
 static size_t rgb_capacity,jpeg_capacity;
 static jpeg_encoder_handle_t encoder;
 
+/* The I2C owner never performs full-frame thermal calculations. */
+static struct {
+    uint32_t good, rejected, queue_drops;
+    uint32_t max_capture_ms, max_read_us, max_calculate_us, opposite_ready;
+} counters;
+
 static void sensor_task(void *arg)
 {
     (void)arg;
-    thermal_frame_t *candidate=calloc(1,sizeof(*candidate));
-    assert(candidate);
+    sensor_pair_t *snapshot=malloc(sizeof(*snapshot));
+    assert(snapshot);
     bool configured=false;
-    unsigned consecutive_errors=0;
-    uint32_t sequence=0;
-    int64_t stats_since=esp_timer_get_time();
-    unsigned good_frames=0, rejected_frames=0;
-    uint32_t max_capture_ms=0;
-    uint32_t max_read_us=0, max_calc_us=0;
-    unsigned opposite_ready_count=0;
+    unsigned consecutive_bus_errors=0;
     for(;;) {
         if(!configured) {
             int rc=sensor_configure();
-            if(rc) { ESP_LOGW(TAG,"Sensor configuration failed (%d); retrying",rc);
-                vTaskDelay(pdMS_TO_TICKS(1000)); continue; }
+            if(rc) {
+                ESP_LOGW(TAG,"Sensor configuration failed (%d); retrying",rc);
+                vTaskDelay(pdMS_TO_TICKS(1000));
+                continue;
+            }
             configured=true;
             ESP_LOGI(TAG,"MLX90640 configured: 18-bit, 32 subpages/s (up to 16 full fps), 400 kHz I2C");
         }
-        int64_t capture_start=esp_timer_get_time();
+        int64_t start=esp_timer_get_time();
         sensor_diag_t diag;
-        bool ok=sensor_capture(candidate,&diag);
-        uint32_t capture_ms=(uint32_t)((esp_timer_get_time()-capture_start)/1000);
-        if(capture_ms>max_capture_ms) max_capture_ms=capture_ms;
-        if(diag.read_us>max_read_us) max_read_us=diag.read_us;
-        if(diag.calculate_us>max_calc_us) max_calc_us=diag.calculate_us;
-        opposite_ready_count+=diag.opposite_ready;
+        bool ok=sensor_capture(snapshot,&diag);
+        uint32_t capture_ms=(uint32_t)((esp_timer_get_time()-start)/1000);
+        bool sent=ok && xQueueSend(capture_queue,snapshot,0)==pdTRUE;
+
         xSemaphoreTake(state_lock,portMAX_DELAY);
-        acquisition_error=!ok;
-        if(ok) { candidate->sequence=++sequence; latest=*candidate; }
+        if(capture_ms>counters.max_capture_ms) counters.max_capture_ms=capture_ms;
+        if(diag.read_us>counters.max_read_us) counters.max_read_us=diag.read_us;
+        counters.opposite_ready+=diag.opposite_ready;
+        if(!ok) counters.rejected++;
+        else if(!sent) counters.queue_drops++;
         xSemaphoreGive(state_lock);
-        if(ok) { consecutive_errors=0; ++good_frames; }
-        else { ++rejected_frames;
-            if(++consecutive_errors>=3) { configured=false; consecutive_errors=0; }
-            ESP_LOGW(TAG,"Frame rejected: %s; capture=%lu ms read=%lu us wait=%lu us calc=%lu us gap=%lu us page=%d",
+        if(!ok) {
+            /* Missed subpages are sampling losses, NOT sensor failures.
+             * Reconfigure only after successive transport/control faults. */
+            bool bus_fault=(strstr(diag.failure,"I2C")!=NULL) ||
+                           (strstr(diag.failure,"deadline")!=NULL) ||
+                           (strcmp(diag.failure,"sensor changed to chess mode")==0);
+            if(bus_fault) {
+                if(++consecutive_bus_errors>=3) {
+                    configured=false;
+                    consecutive_bus_errors=0;
+                }
+            } else consecutive_bus_errors=0;
+            ESP_LOGW(TAG,"Pair rejected: %s; capture=%lu ms read=%lu us wait=%lu us gap=%lu us page=%d",
                      diag.failure,(unsigned long)capture_ms,
                      (unsigned long)diag.read_us,(unsigned long)diag.ready_wait_us,
-                     (unsigned long)diag.calculate_us,(unsigned long)diag.page_gap_us,
-                     diag.last_page);
-            vTaskDelay(pdMS_TO_TICKS(100));
+                     (unsigned long)diag.page_gap_us,diag.last_page);
+        } else {
+            consecutive_bus_errors=0;
+            if(!sent) ESP_LOGW(TAG,"Raw pair queue full; discarded capture");
+        }
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
+}
+
+static void process_task(void *arg)
+{
+    (void)arg;
+    sensor_pair_t *snapshot=malloc(sizeof(*snapshot));
+    thermal_frame_t *candidate=calloc(1,sizeof(*candidate));
+    assert(snapshot && candidate);
+    int64_t stats_since=esp_timer_get_time();
+    uint32_t sequence=0;
+    for(;;) {
+        if(xQueueReceive(capture_queue,snapshot,portMAX_DELAY)!=pdTRUE) continue;
+        uint32_t calculation_us=0;
+        bool ok=sensor_process(snapshot,candidate,&calculation_us);
+        xSemaphoreTake(state_lock,portMAX_DELAY);
+        if(calculation_us>counters.max_calculate_us)
+            counters.max_calculate_us=calculation_us;
+        if(ok) {
+            candidate->sequence=++sequence;
+            latest=*candidate;
+            acquisition_error=false;
+            ++counters.good;
+        } else {
+            ++counters.rejected;
         }
         int64_t now=esp_timer_get_time();
         if(now-stats_since>=5000000) {
-            uint32_t fps10=(uint32_t)((uint64_t)good_frames*10000000ULL/(uint64_t)(now-stats_since));
-            ESP_LOGI(TAG,"Acquisition: %u.%u full fps, good=%u rejected=%u max_capture=%lu ms max_read=%lu us max_calc=%lu us next_ready=%u",
-                     fps10/10,fps10%10,good_frames,rejected_frames,
-                     (unsigned long)max_capture_ms,(unsigned long)max_read_us,
-                     (unsigned long)max_calc_us,opposite_ready_count);
-            good_frames=0; rejected_frames=0; max_capture_ms=0;
-            max_read_us=0; max_calc_us=0; opposite_ready_count=0; stats_since=now;
+            uint32_t dt=(uint32_t)(now-stats_since);
+            uint32_t fps10=(uint32_t)((uint64_t)counters.good*10000000ULL/dt);
+            ESP_LOGI(TAG,"Acquisition: %u.%u full fps good=%lu rejected=%lu dropped=%lu max_pair=%lu ms max_read=%lu us max_calc=%lu us next_ready=%lu",
+                     fps10/10,fps10%10,
+                     (unsigned long)counters.good,(unsigned long)counters.rejected,
+                     (unsigned long)counters.queue_drops,
+                     (unsigned long)counters.max_capture_ms,
+                     (unsigned long)counters.max_read_us,
+                     (unsigned long)counters.max_calculate_us,
+                     (unsigned long)counters.opposite_ready);
+            memset(&counters,0,sizeof(counters));
+            stats_since=now;
         }
-        vTaskDelay(pdMS_TO_TICKS(1));
+        xSemaphoreGive(state_lock);
+        if(!ok) ESP_LOGW(TAG,"Thermal calculation rejected raw pair");
     }
 }
 
@@ -129,7 +178,8 @@ static void stream_return(uvc_fb_t *fb,void *ctx)
 void app_main(void)
 {
     state_lock=xSemaphoreCreateMutex(); jpeg_lock=xSemaphoreCreateMutex();
-    assert(state_lock && jpeg_lock);
+    capture_queue=xQueueCreate(4,sizeof(sensor_pair_t));
+    assert(state_lock && jpeg_lock && capture_queue);
     jpeg_encode_memory_alloc_cfg_t input={.buffer_direction=JPEG_ENC_ALLOC_INPUT_BUFFER};
     jpeg_encode_memory_alloc_cfg_t output={.buffer_direction=JPEG_ENC_ALLOC_OUTPUT_BUFFER};
     rgb=jpeg_alloc_encoder_mem(IMAGE_BYTES,&input,&rgb_capacity);
@@ -149,6 +199,8 @@ void app_main(void)
     ESP_ERROR_CHECK(uvc_device_config(0,&uvc));
     ESP_ERROR_CHECK(uvc_device_init());
     BaseType_t task_ok=xTaskCreate(sensor_task,"sensor",12288,NULL,5,NULL);
+    ESP_ERROR_CHECK(task_ok==pdPASS?ESP_OK:ESP_ERR_NO_MEM);
+    task_ok=xTaskCreate(process_task,"thermal_calc",12288,NULL,4,NULL);
     ESP_ERROR_CHECK(task_ok==pdPASS?ESP_OK:ESP_ERR_NO_MEM);
     task_ok=xTaskCreate(button_task,"button",4096,NULL,4,NULL);
     ESP_ERROR_CHECK(task_ok==pdPASS?ESP_OK:ESP_ERR_NO_MEM);
