@@ -56,16 +56,24 @@ esp_err_t sensor_bus_init(void)
 int MLX90640_I2CRead(uint8_t addr,uint16_t reg,uint16_t words,uint16_t *data)
 {
     if(addr!=SENSOR_ADDR || esp_timer_get_time()>deadline) return -1;
-    uint8_t cmd[2] __attribute__((aligned(4)))={reg>>8,reg};
-    /* ESP-IDF 6.0.3 I3C FIFO drains 32-bit words. Accommodate a padded
-     * single-word read without writing past the caller's uint16_t. */
-    uint32_t short_read=0;
-    uint8_t *dst=(words==1)?(uint8_t *)&short_read:(uint8_t *)data;
-    int timeout_ms=words>64?150:50; /* EEPROM reads are 1664 bytes. */
-    esp_err_t err=i3c_master_i2c_device_transmit_receive(dev,cmd,2,dst,words*2,timeout_ms);
-    if(err!=ESP_OK) return -1;
-    if(words==1) memcpy(data,&short_read,sizeof(uint16_t));
-    for(unsigned i=0;i<words;i++) data[i]=__builtin_bswap16(data[i]);
+    /* IDF 6.0.3 I3C FIFO holds 128 bytes. Split the 1664-byte EEPROM
+     * dump (and any other longer reads) into <=128-byte transactions;
+     * this also avoids relying on multi-watermark FIFO draining. */
+    for(unsigned pos=0;pos<words;) {
+        unsigned n=words-pos;
+        if(n>64) n=64;
+        uint16_t at=reg+pos;
+        uint8_t cmd[2] __attribute__((aligned(4)))={at>>8,at};
+        /* ESP-IDF's FIFO reads 32-bit words: pad 2-byte register reads. */
+        uint32_t short_read=0;
+        uint8_t *dst=(n==1)?(uint8_t *)&short_read:(uint8_t *)&data[pos];
+        esp_err_t err=i3c_master_i2c_device_transmit_receive(dev,cmd,2,dst,n*2,50);
+        if(err!=ESP_OK) return -1;
+        if(n==1) memcpy(&data[pos],&short_read,sizeof(uint16_t));
+        for(unsigned i=pos;i<pos+n;i++)
+            data[i]=__builtin_bswap16(data[i]);
+        pos+=n;
+    }
     if(reg==MLX90640_STATUS_REG && words==1 && !MLX90640_GET_DATA_READY(data[0]))
         vTaskDelay(pdMS_TO_TICKS(2));
     return 0;
