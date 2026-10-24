@@ -6,17 +6,22 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
+#include <string.h>
 #include <math.h>
 
 #define SENSOR_ADDR 0x33
 static i2c_master_dev_handle_t dev;
 static paramsMLX90640 params;
+static SemaphoreHandle_t params_mutex;
 static int64_t deadline;
 static uint16_t raw[834], eeprom[832];
 static float temperatures[THERMAL_PIXELS];
 
 esp_err_t sensor_bus_init(void)
 {
+    params_mutex=xSemaphoreCreateMutex();
+    if(!params_mutex) return ESP_ERR_NO_MEM;
     i2c_master_bus_handle_t bus;
     i2c_master_bus_config_t cfg = {.i2c_port=I2C_NUM_0,.sda_io_num=PIN_SDA,
         .scl_io_num=PIN_SCL,.clk_source=I2C_CLK_SRC_DEFAULT,.glitch_ignore_cnt=7,
@@ -55,7 +60,10 @@ int sensor_configure(void)
     deadline=esp_timer_get_time()+2000000;
     int rc=MLX90640_DumpEE(SENSOR_ADDR,eeprom);
     if(rc) return rc;
-    rc=MLX90640_ExtractParameters(eeprom,&params); if(rc) return rc;
+    xSemaphoreTake(params_mutex,portMAX_DELAY);
+    rc=MLX90640_ExtractParameters(eeprom,&params);
+    xSemaphoreGive(params_mutex);
+    if(rc) return rc;
     rc=MLX90640_SetInterleavedMode(SENSOR_ADDR); if(rc) return rc;
     rc=MLX90640_SetResolution(SENSOR_ADDR,2); if(rc) return rc; /* 18 bit */
     rc=MLX90640_SetRefreshRate(SENSOR_ADDR,6); if(rc) return rc; /* 32 subpages/s */
@@ -134,11 +142,10 @@ static int read_updated_subpage(uint16_t *frame, sensor_diag_t *diag)
     return page;
 }
 
-bool sensor_capture(thermal_frame_t *out, sensor_diag_t *diag)
+bool sensor_capture(sensor_pair_t *out, sensor_diag_t *diag)
 {
     *diag=(sensor_diag_t){.failure="none",.last_page=-1};
-    for(unsigned i=0;i<THERMAL_PIXELS;i++) temperatures[i]=NAN;
-    unsigned seen=0;
+    unsigned seen=0, count=0;
     int last_page=-1;
     int64_t last_page_us=0;
     deadline=esp_timer_get_time()+750000;
@@ -153,19 +160,14 @@ bool sensor_capture(thermal_frame_t *out, sensor_diag_t *diag)
         }
         diag->last_page=page;
         int64_t now=esp_timer_get_time();
-        if(last_page_us)
-            diag->page_gap_us=(uint32_t)(now-last_page_us);
-        /* Both pages must be consecutive; do not combine old and new scenes. */
+        if(last_page_us) diag->page_gap_us=(uint32_t)(now-last_page_us);
         if(last_page==page) { diag->failure="repeated subpage"; return false; }
         if(last_page_us && now-last_page_us>50000) {
             diag->failure="subpage gap exceeds 50ms";
             return false;
         }
-        last_page=page;
-        last_page_us=now;
-        /* The other subpage is stored in separate RAM rows. A new ready
-         * flag for that OTHER subpage is normal and must not reject this
-         * read. Only a same-page update means our rows may be overwritten. */
+        /* Confirm the just-read rows were not overwritten by a later
+         * measurement of the SAME page. Opposite-page ready is harmless. */
         uint16_t status;
         if(MLX90640_I2CRead(SENSOR_ADDR,MLX90640_STATUS_REG,1,&status)) {
             diag->failure="post-read status I2C/deadline";
@@ -178,23 +180,46 @@ bool sensor_capture(thermal_frame_t *out, sensor_diag_t *diag)
             }
             diag->opposite_ready++;
         }
-        float ambient=MLX90640_GetTa(raw,&params);
-        if(!isfinite(ambient)) { diag->failure="invalid ambient"; return false; }
-        int64_t calculate_start=esp_timer_get_time();
-        MLX90640_CalculateTo(raw,&params,0.95f,ambient-8.0f,temperatures);
-        diag->calculate_us+=(uint32_t)(esp_timer_get_time()-calculate_start);
+        /* The worker gets a complete private raw snapshot. No I2C transfer
+         * waits for expensive per-pixel floating-point calculations. */
+        memcpy(out->raw[count],raw,sizeof(raw));
         seen |= 1u<<page;
+        ++count;
+        last_page=page;
+        last_page_us=now;
     }
-    if(seen!=3) { diag->failure="missing complete subpage pair"; return false; }
-    /* Mark factory defects before interpolation; never trust their finite values. */
-    for(unsigned i=0;i<5;i++) {
-        if(params.brokenPixels[i]<THERMAL_PIXELS) temperatures[params.brokenPixels[i]]=NAN;
-        if(params.outlierPixels[i]<THERMAL_PIXELS) temperatures[params.outlierPixels[i]]=NAN;
-    }
-    if(!thermal_validate(temperatures,out)) {
-        diag->failure="invalid calculated pixels";
+    if(seen!=3 || count!=2) {
+        diag->failure="missing complete subpage pair";
         return false;
     }
     out->captured_us=esp_timer_get_time();
+    return true;
+}
+
+bool sensor_process(const sensor_pair_t *pair, thermal_frame_t *out,
+                    uint32_t *calculation_us)
+{
+    for(unsigned i=0;i<THERMAL_PIXELS;i++) temperatures[i]=NAN;
+    int64_t start=esp_timer_get_time();
+    xSemaphoreTake(params_mutex,portMAX_DELAY);
+    bool ok=true;
+    for(unsigned i=0;i<2;i++) {
+        uint16_t *data=(uint16_t *)pair->raw[i];
+        float ambient=MLX90640_GetTa(data,&params);
+        if(!isfinite(ambient)) { ok=false; break; }
+        MLX90640_CalculateTo(data,&params,0.95f,ambient-8.0f,temperatures);
+    }
+    if(ok) {
+        for(unsigned i=0;i<5;i++) {
+            if(params.brokenPixels[i]<THERMAL_PIXELS)
+                temperatures[params.brokenPixels[i]]=NAN;
+            if(params.outlierPixels[i]<THERMAL_PIXELS)
+                temperatures[params.outlierPixels[i]]=NAN;
+        }
+    }
+    xSemaphoreGive(params_mutex);
+    *calculation_us=(uint32_t)(esp_timer_get_time()-start);
+    if(!ok || !thermal_validate(temperatures,out)) return false;
+    out->captured_us=pair->captured_us;
     return true;
 }
