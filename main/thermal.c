@@ -47,15 +47,113 @@ static void pixel(uint8_t *b, int x, int y, uint32_t rgb)
     p[0] = rgb; p[1] = rgb >> 8; p[2] = rgb >> 16;
 }
 
-static uint32_t colour(float n)
+/* Original ESP32-S3 renderer from main/sketch_dec6a.ino, adapted only
+ * for C and ESP32-P4's BGR24 JPEG input (instead of RGB565 LCD output).
+ * The temperature interpolation and LUT indexing are unchanged. */
+enum { MLX_W = 32, MLX_H = 24, VIEW_W = 384, VIEW_H = 288 };
+
+typedef struct {
+  uint8_t i0;
+  uint8_t i1;
+  float w0;
+  float w1;
+} SampleCoord;
+
+static SampleCoord xMap[VIEW_W];
+static SampleCoord yMap[VIEW_H];
+
+static void initResampleMaps(void) {
+  const float scaleX = (float)MLX_W / (float)VIEW_W;
+  const float scaleY = (float)MLX_H / (float)VIEW_H;
+
+  for (int x = 0; x < VIEW_W; ++x) {
+    float srcX = (x + 0.5f) * scaleX - 0.5f;
+    if (srcX < 0.0f) srcX = 0.0f;
+    if (srcX >= MLX_W - 1) srcX = MLX_W - 1.001f;
+
+    int x0 = (int)srcX;
+    int x1 = x0 + 1;
+    if (x1 >= MLX_W) x1 = MLX_W - 1;
+    float dx = srcX - x0;
+
+    xMap[x].i0 = (uint8_t)x0;
+    xMap[x].i1 = (uint8_t)x1;
+    xMap[x].w0 = 1.0f - dx;
+    xMap[x].w1 = dx;
+  }
+
+  for (int y = 0; y < VIEW_H; ++y) {
+    float srcY = (y + 0.5f) * scaleY - 0.5f;
+    if (srcY < 0.0f) srcY = 0.0f;
+    if (srcY >= MLX_H - 1) srcY = MLX_H - 1.001f;
+
+    int y0 = (int)srcY;
+    int y1 = y0 + 1;
+    if (y1 >= MLX_H) y1 = MLX_H - 1;
+    float dy = srcY - y0;
+
+    yMap[y].i0 = (uint8_t)y0;
+    yMap[y].i1 = (uint8_t)y1;
+    yMap[y].w0 = 1.0f - dy;
+    yMap[y].w1 = dy;
+  }
+}
+
+// smooth 'heat' gradient via precomputed palette
+constexpr int PALETTE_SIZE = 256;
+static uint32_t tempPalette[PALETTE_SIZE];
+
+static uint32_t makeGradientColor(float n) {
+  float r, g, b;
+
+  if (n <= 0.25f) {
+    float k = n / 0.25f;
+    r = 0.0f; g = 0.0f; b = k;
+  } else if (n <= 0.50f) {
+    float k = (n - 0.25f) / 0.25f;
+    r = 0.0f; g = k; b = 1.0f;
+  } else if (n <= 0.75f) {
+    float k = (n - 0.50f) / 0.25f;
+    r = k; g = 1.0f; b = 1.0f - k;
+  } else {
+    float k = (n - 0.75f) / 0.25f;
+    r = 1.0f; g = 1.0f; b = k;
+  }
+
+  uint8_t R = (uint8_t)(r * 255.0f + 0.5f);
+  uint8_t G = (uint8_t)(g * 255.0f + 0.5f);
+  uint8_t B = (uint8_t)(b * 255.0f + 0.5f);
+
+  return ((uint32_t)R << 16) | ((uint32_t)G << 8) | B;
+}
+
+static void initTempPalette(void) {
+  for (int i = 0; i < PALETTE_SIZE; ++i) {
+    float normalized = i / 255.0f;
+    float n = 1.0f - normalized;
+    tempPalette[i] = makeGradientColor(n);
+  }
+}
+
+static inline uint32_t tempToColorFast(float t, float minTemp, float maxTemp) {
+  if (t < minTemp) t = minTemp;
+  if (t > maxTemp) t = maxTemp;
+
+  float n = (t - minTemp) / (maxTemp - minTemp);
+  if (n < 0.0f) n = 0.0f;
+  if (n > 1.0f) n = 1.0f;
+
+  int idx = (int)(n * 255.0f + 0.5f);
+  if (idx < 0) idx = 0;
+  if (idx >= PALETTE_SIZE) idx = PALETTE_SIZE - 1;
+
+  return tempPalette[idx];
+}
+
+void thermal_init(void)
 {
-    n = 1.0f - fminf(1, fmaxf(0, n)); /* Preserve original cold-white/hot-black palette. */
-    float r, g, b;
-    if (n <= .25f) { r=0; g=0; b=n*4; }
-    else if (n <= .5f) { r=0; g=(n-.25f)*4; b=1; }
-    else if (n <= .75f) { r=(n-.5f)*4; g=1; b=1-r; }
-    else { r=1; g=1; b=(n-.75f)*4; }
-    return ((uint32_t)(r*255)<<16) | ((uint32_t)(g*255)<<8) | (uint32_t)(b*255);
+  initTempPalette();
+  initResampleMaps();
 }
 
 /* Original 3x5 bitmap alphabet; each row is three bits, top row first. */
@@ -98,24 +196,14 @@ void thermal_render(uint8_t *b,const thermal_frame_t *f,thermal_mode_t mode,
     text(b,368,9,names[mode],0xffffff,2);
     if(!f->valid) { text(b,40,150,"WAITING FOR VALID FRAME",0xff4040,3); return; }
     float lo,hi; thermal_range(f,mode,&lo,&hi);
-    for(int y=0;y<288;y++) {
-        float sy=fminf(23,fmaxf(0,(y+.5f)/12-.5f));
-        int y0=(int)sy,y1=y0<23?y0+1:y0; float fy=sy-y0;
-        for(int x=0;x<384;x++) {
-            float sx=fminf(31,fmaxf(0,(x+.5f)/12-.5f));
-            int x0=(int)sx,x1=x0<31?x0+1:x0; float fx=sx-x0;
-            float a=f->pixels[y0*32+x0]*(1-fx)+f->pixels[y0*32+x1]*fx;
-            float c=f->pixels[y1*32+x0]*(1-fx)+f->pixels[y1*32+x1]*fx;
-            pixel(b,x,y+32,colour((a*(1-fy)+c*fy-lo)/(hi-lo)));
-        }
-    }
+    renderFrame(b, f->pixels, lo, hi);
     char str[32];
     snprintf(str,sizeof(str),"MIN %.1f",f->min); text(b,390,40,str,0xffffff,1);
     snprintf(str,sizeof(str),"MAX %.1f",f->max); text(b,390,51,str,0xffffff,1);
     snprintf(str,sizeof(str),"AGE %lu MS",(unsigned long)age_ms); text(b,390,62,str,0xffffff,1);
     snprintf(str,sizeof(str),"FIX %u",f->repaired); text(b,390,73,str,0xffffff,1);
     for(int y=95;y<=295;y++) for(int x=394;x<414;x++)
-        pixel(b,x,y,colour(1-(y-95)/200.f));
+        pixel(b,x,y,tempPalette[PALETTE_SIZE-1-((y-95)*(PALETTE_SIZE-1)+100)/200]);
     for(int i=0;i<=4;i++) {
         float t=hi-(hi-lo)*i/4.f; int y=95+i*50;
         snprintf(str,sizeof(str),"%.1f",t); text(b,422,y-2,str,0xffffff,1);
