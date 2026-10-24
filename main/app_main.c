@@ -34,24 +34,37 @@ static void sensor_task(void *arg)
     bool configured=false;
     unsigned consecutive_errors=0;
     uint32_t sequence=0;
+    int64_t stats_since=esp_timer_get_time();
+    unsigned good_frames=0, rejected_frames=0;
+    uint32_t max_capture_ms=0;
     for(;;) {
         if(!configured) {
             int rc=sensor_configure();
             if(rc) { ESP_LOGW(TAG,"Sensor configuration failed (%d); retrying",rc);
                 vTaskDelay(pdMS_TO_TICKS(1000)); continue; }
             configured=true;
-            ESP_LOGI(TAG,"MLX90640 configured: 18-bit, 8 subpages/s, 400 kHz I2C");
+            ESP_LOGI(TAG,"MLX90640 configured: 18-bit, 32 subpages/s (up to 16 full fps), 400 kHz I2C");
         }
+        int64_t capture_start=esp_timer_get_time();
         bool ok=sensor_capture(candidate);
+        uint32_t capture_ms=(uint32_t)((esp_timer_get_time()-capture_start)/1000);
+        if(capture_ms>max_capture_ms) max_capture_ms=capture_ms;
         xSemaphoreTake(state_lock,portMAX_DELAY);
         acquisition_error=!ok;
         if(ok) { candidate->sequence=++sequence; latest=*candidate; }
         xSemaphoreGive(state_lock);
-        if(ok) consecutive_errors=0;
-        else {
+        if(ok) { consecutive_errors=0; ++good_frames; }
+        else { ++rejected_frames;
             if(++consecutive_errors>=3) { configured=false; consecutive_errors=0; }
             ESP_LOGW(TAG,"Frame rejected; keeping last valid frame");
             vTaskDelay(pdMS_TO_TICKS(100));
+        }
+        int64_t now=esp_timer_get_time();
+        if(now-stats_since>=5000000) {
+            uint32_t fps10=(uint32_t)((uint64_t)good_frames*10000000ULL/(uint64_t)(now-stats_since));
+            ESP_LOGI(TAG,"Acquisition: %u.%u full fps, good=%u rejected=%u max_capture=%lu ms",
+                     fps10/10,fps10%10,good_frames,rejected_frames,(unsigned long)max_capture_ms);
+            good_frames=0; rejected_frames=0; max_capture_ms=0; stats_since=now;
         }
         vTaskDelay(pdMS_TO_TICKS(1));
     }
