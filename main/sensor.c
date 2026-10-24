@@ -4,6 +4,7 @@
 #include "MLX90640_I2C_Driver.h"
 #include "driver/i3c_master.h"
 #include "driver/i3c_master_i2c.h"
+#include "driver/gpio.h"
 #include "esp_timer.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -39,6 +40,14 @@ esp_err_t sensor_bus_init(void)
         .clock_source=I3C_MASTER_CLK_SRC_DEFAULT
     };
     esp_err_t err=i3c_new_master_bus(&cfg,&bus);
+    if(err!=ESP_OK) return err;
+    /* The proven I2C baseline enabled internal pull-ups. The IDF 6.0.3
+     * I3C legacy-I2C driver only routes GPIOs and does NOT turn these on.
+     * Restore the same weak pull-ups for bootstrap. External low-value
+     * pull-ups are still needed for reliable 1 MHz Fast-mode Plus. */
+    err=gpio_set_pull_mode(PIN_SDA,GPIO_PULLUP_ONLY);
+    if(err!=ESP_OK) return err;
+    err=gpio_set_pull_mode(PIN_SCL,GPIO_PULLUP_ONLY);
     if(err!=ESP_OK) return err;
 
     /* The MLX90640's EEPROM requires <=400 kHz. Other registers/RAM allow
