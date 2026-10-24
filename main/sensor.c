@@ -1,5 +1,5 @@
 #include "sensor.h"
-#include "board.h"
+#include "camera_pins.h"
 #include "MLX90640_API.h"
 #include "MLX90640_I2C_Driver.h"
 #include "driver/i2c_master.h"

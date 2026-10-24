@@ -88,12 +88,12 @@ static void text(uint8_t *b,int x,int y,const char *s,uint32_t color,int scale)
 }
 
 void thermal_render(uint8_t *b,const thermal_frame_t *f,thermal_mode_t mode,
-                    bool frozen,bool stale,uint32_t age_ms)
+                    bool stale,uint32_t age_ms)
 {
     static const char *names[]={"AUTO","BODY","HOME"};
     memset(b,0,IMAGE_BYTES);
-    text(b,8,9,frozen?"RESUME":"FREEZE",0xffffff,2);
-    text(b,128,9,!f->valid?"NO SENSOR":stale?"STALE":frozen?"FROZEN":"USB CAMERA",
+    text(b,8,9,"THERMALCAM",0xffffff,2);
+    text(b,128,9,!f->valid?"NO SENSOR":stale?"STALE":"USB CAMERA",
          (!f->valid||stale)?0xff4040:0xffffff,2);
     text(b,368,9,names[mode],0xffffff,2);
     if(!f->valid) { text(b,40,150,"WAITING FOR VALID FRAME",0xff4040,3); return; }
@@ -121,5 +121,5 @@ void thermal_render(uint8_t *b,const thermal_frame_t *f,thermal_mode_t mode,
         snprintf(str,sizeof(str),"%.1f",t); text(b,422,y-2,str,0xffffff,1);
     }
     text(b,420,309,"C",0xffffff,1);
-    if(stale||frozen) text(b,8,300,stale?"STALE":"FROZEN",0xff4040,2);
+    if(stale) text(b,8,300,"STALE",0xff4040,2);
 }

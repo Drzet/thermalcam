@@ -1,4 +1,18 @@
-# P4 UVC implementation validation — 2026-10-19
+# P4 UVC implementation validation
+
+## Phone-only update — 2026-10-24
+
+Removed the local LCD/SPI driver, touchscreen, freeze state and on-image touch
+controls. Retained the GPIO3 active-low button with 50 ms debounce to cycle
+Auto/Body/Home. Sensor SDA/SCL remain GPIO41/42; UVC output remains 480×320
+MJPEG at 4 fps. The source no longer initializes display/touch GPIOs or SPI.
+
+Host frame-processing/rendering tests pass with AddressSanitizer and UBSan.
+The updated ESP32-P4 firmware and bootloader build passed with ESP-IDF v5.5.1;
+partition size checks passed and no compiler warnings were reported.
+No physical hardware was tested.
+
+## Original implementation — 2026-10-19 (historical)
 
 ## Completed
 

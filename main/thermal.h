@@ -18,4 +18,4 @@ bool thermal_validate(const float *input, thermal_frame_t *output);
 void thermal_range(const thermal_frame_t *frame, thermal_mode_t mode, float *lo, float *hi);
 /* BGR888 byte order: matches the P4 JPEG encoder's native RGB888 layout. */
 void thermal_render(uint8_t *bgr, const thermal_frame_t *frame, thermal_mode_t mode,
-                    bool frozen, bool stale, uint32_t age_ms);
+                    bool stale, uint32_t age_ms);

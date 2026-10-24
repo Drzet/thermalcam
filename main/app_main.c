@@ -8,19 +8,19 @@
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
-#include "driver/gpio.h"
 #include "driver/jpeg_encode.h"
 #include "usb_device_uvc.h"
 #include "thermal.h"
 #include "sensor.h"
-#include "board.h"
+#include "camera_pins.h"
+#include "driver/gpio.h"
 
 #define JPEG_CAPACITY (IMAGE_BYTES)
 static const char *TAG="thermalcam";
 static SemaphoreHandle_t state_lock,jpeg_lock;
-static thermal_frame_t latest,held;
+static thermal_frame_t latest;
 static thermal_mode_t mode;
-static bool frozen,acquisition_error=true;
+static bool acquisition_error=true;
 static uvc_fb_t published;
 static uint8_t *rgb,*encoded;
 static size_t rgb_capacity,jpeg_capacity;
@@ -57,35 +57,21 @@ static void sensor_task(void *arg)
     }
 }
 
-static void input_action(bool freeze)
-{
-    xSemaphoreTake(state_lock,portMAX_DELAY);
-    if(freeze) {
-        if(frozen) frozen=false;
-        else if(latest.valid) { held=latest; frozen=true; }
-    } else mode=(mode+1)%MODE_COUNT;
-    xSemaphoreGive(state_lock);
-}
-static void input_task(void *arg)
+static void button_task(void *arg)
 {
     (void)arg;
-    bool last=false,stable=false,touch_last=false,touch_stable=false;
-    int64_t changed=0,touch_changed=0;
-    int tx=0,ty=0;
+    bool last=false, stable=false;
+    int64_t changed=0;
     for(;;) {
         int64_t now=esp_timer_get_time();
         bool down=!gpio_get_level(PIN_BUTTON);
         if(down!=last) { last=down; changed=now; }
-        if(now-changed>=50000 && stable!=down) { stable=down; if(down) input_action(false); }
-        int x,y;
-        bool pressed=board_touch(&x,&y);
-        if(pressed) { tx=x; ty=y; }
-        if(pressed!=touch_last) { touch_last=pressed; touch_changed=now; }
-        if(now-touch_changed>=50000 && touch_stable!=pressed) {
-            touch_stable=pressed;
-            if(pressed && ty>=0 && ty<32) {
-                if(tx>=0 && tx<120) input_action(true);
-                else if(tx>=360 && tx<480) input_action(false);
+        if(now-changed>=50000 && stable!=down) {
+            stable=down;
+            if(down) {
+                xSemaphoreTake(state_lock,portMAX_DELAY);
+                mode=(mode+1)%MODE_COUNT;
+                xSemaphoreGive(state_lock);
             }
         }
         vTaskDelay(pdMS_TO_TICKS(10));
@@ -128,7 +114,9 @@ void app_main(void)
     published.width=IMAGE_W; published.height=IMAGE_H; published.format=UVC_FORMAT_JPEG;
     jpeg_encode_engine_cfg_t engine_cfg={.timeout_ms=200};
     ESP_ERROR_CHECK(jpeg_new_encoder_engine(&engine_cfg,&encoder));
-    ESP_ERROR_CHECK(board_init());
+    gpio_config_t button={.pin_bit_mask=1ULL<<PIN_BUTTON,.mode=GPIO_MODE_INPUT,
+        .pull_up_en=GPIO_PULLUP_ENABLE};
+    ESP_ERROR_CHECK(gpio_config(&button));
     ESP_ERROR_CHECK(sensor_bus_init());
     uvc_device_config_t uvc={.uvc_buffer=transfer_buffer,.uvc_buffer_size=JPEG_CAPACITY,
         .start_cb=stream_start,.stop_cb=stream_stop,.fb_get_cb=stream_get,.fb_return_cb=stream_return};
@@ -136,20 +124,20 @@ void app_main(void)
     ESP_ERROR_CHECK(uvc_device_init());
     BaseType_t task_ok=xTaskCreate(sensor_task,"sensor",12288,NULL,5,NULL);
     ESP_ERROR_CHECK(task_ok==pdPASS?ESP_OK:ESP_ERR_NO_MEM);
-    task_ok=xTaskCreate(input_task,"input",4096,NULL,4,NULL);
+    task_ok=xTaskCreate(button_task,"button",4096,NULL,4,NULL);
     ESP_ERROR_CHECK(task_ok==pdPASS?ESP_OK:ESP_ERR_NO_MEM);
     thermal_frame_t *view=calloc(1,sizeof(*view)); assert(view);
     jpeg_encode_cfg_t cfg={.width=IMAGE_W,.height=IMAGE_H,.src_type=JPEG_ENCODE_IN_FORMAT_RGB888,
         .sub_sample=JPEG_DOWN_SAMPLING_YUV444,.image_quality=80};
     TickType_t next=xTaskGetTickCount();
     for(;;) {
-        bool hold,fault; thermal_mode_t active_mode;
+        bool fault; thermal_mode_t active_mode;
         xSemaphoreTake(state_lock,portMAX_DELAY);
-        hold=frozen; fault=acquisition_error; active_mode=mode; *view=hold?held:latest;
+        fault=acquisition_error; active_mode=mode; *view=latest;
         xSemaphoreGive(state_lock);
         int64_t age=view->valid?(esp_timer_get_time()-view->captured_us)/1000:0;
-        bool stale=!hold && (fault || age>1000);
-        thermal_render(rgb,view,active_mode,hold,stale,age>UINT32_MAX?UINT32_MAX:(uint32_t)age);
+        bool stale=fault || age>1000;
+        thermal_render(rgb,view,active_mode,stale,age>UINT32_MAX?UINT32_MAX:(uint32_t)age);
         uint32_t bytes=0;
         esp_err_t e=jpeg_encoder_process(encoder,&cfg,rgb,IMAGE_BYTES,encoded,jpeg_capacity,&bytes);
         if(e==ESP_OK && bytes>0 && bytes<=JPEG_CAPACITY) {
@@ -164,8 +152,6 @@ void app_main(void)
             xSemaphoreTake(jpeg_lock,portMAX_DELAY); published.len=0; xSemaphoreGive(jpeg_lock);
             ESP_LOGE(TAG,"JPEG failed: %s, %lu bytes",esp_err_to_name(e),(unsigned long)bytes);
         }
-        e=board_draw(rgb);
-        if(e!=ESP_OK) ESP_LOGE(TAG,"LCD write failed: %s",esp_err_to_name(e));
         vTaskDelayUntil(&next,pdMS_TO_TICKS(250));
     }
 }

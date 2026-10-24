@@ -28,7 +28,7 @@ int main(int argc,char **argv)
     assert(thermal_validate(input,&frame));
     uint8_t *memory=malloc(IMAGE_BYTES+32); assert(memory);
     memset(memory,0xa5,IMAGE_BYTES+32);
-    thermal_render(memory+16,&frame,MODE_AUTO,false,false,50);
+    thermal_render(memory+16,&frame,MODE_AUTO,false,50);
     for(int i=0;i<16;i++) assert(memory[i]==0xa5 && memory[IMAGE_BYTES+16+i]==0xa5);
     if(argc>1) {
         FILE *f=fopen(argv[1],"wb"); assert(f); fprintf(f,"P6\n480 320\n255\n");
@@ -37,8 +37,8 @@ int main(int argc,char **argv)
         }
         fclose(f);
     }
-    thermal_render(memory+16,&frame,MODE_BODY,true,false,1000);
-    frame.valid=false; thermal_render(memory+16,&frame,MODE_AUTO,false,true,0);
+    thermal_render(memory+16,&frame,MODE_BODY,true,1000);
+    frame.valid=false; thermal_render(memory+16,&frame,MODE_AUTO,true,0);
     free(memory);
     puts("PASS: invalid frames, isolated repair, cluster rejection, actual extrema, ranges, render bounds");
 }
