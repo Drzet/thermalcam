@@ -41,6 +41,13 @@ esp_err_t sensor_bus_init(void)
     };
     esp_err_t err=i3c_new_master_bus(&cfg,&bus);
     if(err!=ESP_OK) return err;
+    /* Unlike the normal I2C master, IDF 6.0.3's I3C pin setup does not
+     * set GPIO open-drain. On the non-dedicated GPIO41/42 pads, legacy I2C
+     * requires this explicitly. Do not drive SDA/SCL high push-pull. */
+    err=gpio_od_enable(PIN_SDA);
+    if(err!=ESP_OK) return err;
+    err=gpio_od_enable(PIN_SCL);
+    if(err!=ESP_OK) return err;
     /* The proven I2C baseline enabled internal pull-ups. The IDF 6.0.3
      * I3C legacy-I2C driver only routes GPIOs and does NOT turn these on.
      * Restore the same weak pull-ups for bootstrap. External low-value
