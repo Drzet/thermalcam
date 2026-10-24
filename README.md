@@ -8,7 +8,10 @@ The original S3 implementation remains in Git history and on main.
 ## Hardware and build baseline
 
 - Experimental branch uses **ESP-IDF v6.0.3**, target **esp32p4**,
-  matching the verified running P4 build. It relies on the v6.0.3
+  matching the verified running P4 build. The board's confirmed **v1.0**
+  silicon revision is pinned via `CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y`
+  and `CONFIG_ESP32P4_REV_MIN_100=y` in `sdkconfig.defaults` (IDF 6
+  otherwise defaults to incompatible v3.1). It relies on the v6.0.3
   `esp_driver_i3c` legacy-I2C API. In v6.0.3 this driver is gated by
   `CONFIG_IDF_EXPERIMENTAL_FEATURES=y` (which enables the hidden
   `CONFIG_I3C_MASTER_ENABLED=y`); the setting is included in
@@ -44,6 +47,14 @@ With the ESP-IDF v6.0.3 environment activated:
 idf.py set-target esp32p4
 idf.py build
 ```
+
+`set-target` is a **one-time** regeneration for existing checkouts with an old
+local `sdkconfig`; it backs up the old config, clears build artifacts and
+applies this branch's tracked defaults. Normal subsequent builds only need
+`idf.py build`. Verify `sdkconfig` has both v1.0 revision selections
+and `CONFIG_I3C_MASTER_ENABLED=y`. The project never edits local `sdkconfig`
+when switching branches, so changing `sdkconfig.defaults` alone does not
+override values retained in an existing file.
 
 Use the resulting build's flash arguments and the correct serial device for
 your connected board. No board was flashed during development.
