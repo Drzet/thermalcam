@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <assert.h>
 #include <string.h>
+#include "sdkconfig.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
@@ -156,8 +157,18 @@ static void button_task(void *arg)
 static esp_err_t stream_start(uvc_format_t fmt,int w,int h,int rate,void *ctx)
 {
     (void)ctx;
-    if(fmt!=UVC_FORMAT_JPEG || w!=IMAGE_W || h!=IMAGE_H || rate!=16)
+    ESP_LOGI(TAG,"UVC host request: fmt=%d %dx%d at %d fps (descriptor=%d fps)",
+             (int)fmt,w,h,rate,CONFIG_UVC_CAM1_FRAMERATE);
+    if(fmt!=UVC_FORMAT_JPEG || w!=IMAGE_W || h!=IMAGE_H) {
+        ESP_LOGW(TAG,"UVC unsupported host format/resolution");
         return ESP_ERR_NOT_SUPPORTED;
+    }
+    /* The local sdkconfig may retain an older descriptor rate even if
+     * sdkconfig.defaults has changed. Never reject an otherwise valid
+     * stream solely because the host requested that advertised rate. */
+    if(rate!=CONFIG_UVC_CAM1_FRAMERATE)
+        ESP_LOGW(TAG,"UVC rate differs from compiled descriptor: %d vs %d",
+                 rate,CONFIG_UVC_CAM1_FRAMERATE);
     ESP_LOGI(TAG,"UVC started: %dx%d at %d fps",w,h,rate);
     return ESP_OK;
 }
@@ -198,6 +209,8 @@ void app_main(void)
         .start_cb=stream_start,.stop_cb=stream_stop,.fb_get_cb=stream_get,.fb_return_cb=stream_return};
     ESP_ERROR_CHECK(uvc_device_config(0,&uvc));
     ESP_ERROR_CHECK(uvc_device_init());
+    ESP_LOGI(TAG,"UVC compiled descriptor: MJPEG %dx%d at %d fps",IMAGE_W,IMAGE_H,
+             CONFIG_UVC_CAM1_FRAMERATE);
     BaseType_t task_ok=xTaskCreate(sensor_task,"sensor",12288,NULL,5,NULL);
     ESP_ERROR_CHECK(task_ok==pdPASS?ESP_OK:ESP_ERR_NO_MEM);
     task_ok=xTaskCreate(process_task,"thermal_calc",12288,NULL,4,NULL);
@@ -219,6 +232,11 @@ void app_main(void)
         uint32_t bytes=0;
         esp_err_t e=jpeg_encoder_process(encoder,&cfg,rgb,IMAGE_BYTES,encoded,jpeg_capacity,&bytes);
         if(e==ESP_OK && bytes>0 && bytes<=JPEG_CAPACITY) {
+            static bool first_jpeg_logged;
+            if(!first_jpeg_logged) {
+                ESP_LOGI(TAG,"First JPEG encoded: %lu bytes",(unsigned long)bytes);
+                first_jpeg_logged=true;
+            }
             xSemaphoreTake(jpeg_lock,portMAX_DELAY);
             memcpy(published.buf,encoded,bytes); published.len=bytes;
             int64_t now=esp_timer_get_time();
