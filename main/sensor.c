@@ -58,20 +58,68 @@ int sensor_configure(void)
     rc=MLX90640_ExtractParameters(eeprom,&params); if(rc) return rc;
     rc=MLX90640_SetInterleavedMode(SENSOR_ADDR); if(rc) return rc;
     rc=MLX90640_SetResolution(SENSOR_ADDR,2); if(rc) return rc; /* 18 bit */
-    rc=MLX90640_SetRefreshRate(SENSOR_ADDR,4); if(rc) return rc; /* 8 subpages/s */
+    rc=MLX90640_SetRefreshRate(SENSOR_ADDR,6); if(rc) return rc; /* 32 subpages/s */
     if(MLX90640_GetCurMode(SENSOR_ADDR)!=0 || MLX90640_GetCurResolution(SENSOR_ADDR)!=2 ||
-       MLX90640_GetRefreshRate(SENSOR_ADDR)!=4) return -1;
+       MLX90640_GetRefreshRate(SENSOR_ADDR)!=6) return -1;
     return 0;
+}
+
+/*
+ * TV/interleaved mode updates one complete 32-pixel row out of every two.
+ * Reading only those twelve rows halves pixel I2C traffic.  This is necessary
+ * for 32 subpages/s on the P4's documented 400 kHz master interface.
+ * Keep Melexis' 834-word frame layout for its temperature-calculation API.
+ */
+static int read_updated_subpage(uint16_t *frame)
+{
+    uint16_t status;
+    do {
+        if (MLX90640_I2CRead(SENSOR_ADDR, MLX90640_STATUS_REG, 1, &status)) return -1;
+    } while (!MLX90640_GET_DATA_READY(status));
+
+    int page = MLX90640_GET_FRAME(status);
+    if (MLX90640_I2CWrite(SENSOR_ADDR, MLX90640_STATUS_REG,
+                          MLX90640_INIT_STATUS_VALUE)) return -1;
+
+    for (unsigned row = (unsigned)page; row < 24; row += 2) {
+        unsigned offset = row * 32;
+        if (MLX90640_I2CRead(SENSOR_ADDR, MLX90640_PIXEL_DATA_START_ADDRESS + offset,
+                             32, &frame[offset])) return -1;
+        if (frame[offset] == 0x7FFF) return -1; /* Upstream frame-data check. */
+    }
+
+    if (MLX90640_I2CRead(SENSOR_ADDR, MLX90640_AUX_DATA_START_ADDRESS,
+                         MLX90640_AUX_NUM, &frame[768])) return -1;
+    if (MLX90640_I2CRead(SENSOR_ADDR, MLX90640_CTRL_REG, 1, &frame[832])) return -1;
+    frame[833] = (uint16_t)page;
+
+    /* Upstream auxiliary-data validation, retained for the shortened read. */
+    const unsigned ranges[][2] = {
+        {0, 1}, {8, 19}, {20, 23}, {24, 33},
+        {40, 51}, {52, 55}, {56, 64}
+    };
+    for (unsigned i = 0; i < sizeof(ranges) / sizeof(ranges[0]); i++)
+        for (unsigned j = ranges[i][0]; j < ranges[i][1]; j++)
+            if (frame[768 + j] == 0x7FFF) return -1;
+    if (frame[832] & MLX90640_CTRL_MEAS_MODE_MASK) return -1;
+    return page;
 }
 
 bool sensor_capture(thermal_frame_t *out)
 {
     for(unsigned i=0;i<THERMAL_PIXELS;i++) temperatures[i]=NAN;
     unsigned seen=0;
+    int last_page=-1;
+    int64_t last_page_us=0;
     deadline=esp_timer_get_time()+750000;
     for(unsigned attempt=0;attempt<4 && seen!=3;attempt++) {
-        int page=MLX90640_GetFrameData(SENSOR_ADDR,raw);
+        int page=read_updated_subpage(raw);
         if(page<0 || page>1) return false;
+        int64_t now=esp_timer_get_time();
+        /* Both pages must be consecutive; do not combine old and new scenes. */
+        if(last_page==page || (last_page_us && now-last_page_us>50000)) return false;
+        last_page=page;
+        last_page_us=now;
         /* Reject a read overlapped by the next conversion. */
         uint16_t status;
         if(MLX90640_I2CRead(SENSOR_ADDR,MLX90640_STATUS_REG,1,&status)) return false;
