@@ -5,12 +5,14 @@
 #include "driver/i3c_master.h"
 #include "driver/i3c_master_i2c.h"
 #include "esp_timer.h"
+#include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
 #include <string.h>
 #include <math.h>
 
+static const char *TAG="mlx90640_bus";
 #define SENSOR_ADDR 0x33
 #define EEPROM_BUS_HZ 400000u
 #define ACQUISITION_BUS_HZ 1000000u
@@ -70,7 +72,12 @@ int MLX90640_I2CRead(uint8_t addr,uint16_t reg,uint16_t words,uint16_t *data)
         uint32_t short_read=0;
         uint8_t *dst=(n==1)?(uint8_t *)&short_read:(uint8_t *)&data[pos];
         esp_err_t err=i3c_master_i2c_device_transmit_receive(dev,cmd,2,dst,n*2,50);
-        if(err!=ESP_OK) return -1;
+        if(err!=ESP_OK) {
+            ESP_LOGE(TAG,"I3C-I2C read failed: reg=0x%04X words=%u clock=%lu Hz: %s",
+                     at,n,(unsigned long)(dev==dev_slow?EEPROM_BUS_HZ:ACQUISITION_BUS_HZ),
+                     esp_err_to_name(err));
+            return -1;
+        }
         if(n==1) memcpy(&data[pos],&short_read,sizeof(uint16_t));
         for(unsigned i=pos;i<pos+n;i++)
             data[i]=__builtin_bswap16(data[i]);
@@ -84,7 +91,12 @@ int MLX90640_I2CWrite(uint8_t addr,uint16_t reg,uint16_t value)
 {
     if(addr!=SENSOR_ADDR || esp_timer_get_time()>deadline) return -1;
     uint8_t cmd[4] __attribute__((aligned(4)))={reg>>8,reg,value>>8,value};
-    return i3c_master_i2c_device_transmit(dev,cmd,4,50)==ESP_OK?0:-1;
+    esp_err_t err=i3c_master_i2c_device_transmit(dev,cmd,4,50);
+    if(err!=ESP_OK)
+        ESP_LOGE(TAG,"I3C-I2C write failed: reg=0x%04X clock=%lu Hz: %s",
+                 reg,(unsigned long)(dev==dev_slow?EEPROM_BUS_HZ:ACQUISITION_BUS_HZ),
+                 esp_err_to_name(err));
+    return err==ESP_OK?0:-1;
 }
 void MLX90640_I2CInit(void) {}
 void MLX90640_I2CFreqSet(int freq) { (void)freq; }
@@ -95,8 +107,23 @@ int sensor_configure(void)
     /* Every reinitialisation re-reads EEPROM at its rated <=400 kHz. */
     dev=dev_slow;
     deadline=esp_timer_get_time()+2000000;
+    /* Non-destructive one-word EEPROM probe distinguishes a fundamental
+     * I3C legacy-I2C transaction failure from a long FIFO read failure. */
+    uint16_t probe=0;
+    if(MLX90640_I2CRead(SENSOR_ADDR,0x2400,1,&probe)) {
+        ESP_LOGE(TAG,"400 kHz 1-word EEPROM probe failed before DumpEE");
+        return -1;
+    }
+    static bool logged_probe;
+    if(!logged_probe) {
+        ESP_LOGI(TAG,"400 kHz EEPROM single-word probe succeeded: 0x%04X",probe);
+        logged_probe=true;
+    }
     int rc=MLX90640_DumpEE(SENSOR_ADDR,eeprom);
-    if(rc) return rc;
+    if(rc) {
+        ESP_LOGE(TAG,"MLX90640_DumpEE failed at 400 kHz: %d",rc);
+        return rc;
+    }
     xSemaphoreTake(params_mutex,portMAX_DELAY);
     rc=MLX90640_ExtractParameters(eeprom,&params);
     xSemaphoreGive(params_mutex);
