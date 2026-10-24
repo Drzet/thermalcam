@@ -68,7 +68,12 @@ configuration readback and waits for two consecutive, opposite subpages with
 a 750 ms deadline, yielding while waiting. The sensor uses interleaved (TV)
 mode and reads only the twelve newly updated 32-pixel rows per subpage; the
 64 auxiliary words are still read and validated. Repeated, tardy or overlapped
-subpages never replace the last valid frame. Three consecutive acquisition errors trigger sensor reinitialization;
+subpages never replace the last valid frame. The acquisition path accepts a
+newly ready *opposite* subpage after the current pixel read because the two
+subpages use disjoint rows in TV mode. It rejects a same-subpage overwrite.
+Auxiliary words are read before the pixel rows. The five-second log reports
+measured full-frame fps, rejected frames, maximum read/calculation time, and
+the count of opposite subpages becoming ready during readout. Three consecutive acquisition errors trigger sensor reinitialization;
 a missing sensor is retried once per second without stopping USB/UI.
 
 Factory bad pixels are invalidated before correction. At most four invalid
