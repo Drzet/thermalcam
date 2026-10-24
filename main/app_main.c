@@ -46,7 +46,8 @@ static void sensor_task(void *arg)
             ESP_LOGI(TAG,"MLX90640 configured: 18-bit, 32 subpages/s (up to 16 full fps), 400 kHz I2C");
         }
         int64_t capture_start=esp_timer_get_time();
-        bool ok=sensor_capture(candidate);
+        sensor_diag_t diag;
+        bool ok=sensor_capture(candidate,&diag);
         uint32_t capture_ms=(uint32_t)((esp_timer_get_time()-capture_start)/1000);
         if(capture_ms>max_capture_ms) max_capture_ms=capture_ms;
         xSemaphoreTake(state_lock,portMAX_DELAY);
@@ -56,7 +57,11 @@ static void sensor_task(void *arg)
         if(ok) { consecutive_errors=0; ++good_frames; }
         else { ++rejected_frames;
             if(++consecutive_errors>=3) { configured=false; consecutive_errors=0; }
-            ESP_LOGW(TAG,"Frame rejected; keeping last valid frame");
+            ESP_LOGW(TAG,"Frame rejected: %s; capture=%lu ms read=%lu us wait=%lu us calc=%lu us gap=%lu us page=%d",
+                     diag.failure,(unsigned long)capture_ms,
+                     (unsigned long)diag.read_us,(unsigned long)diag.ready_wait_us,
+                     (unsigned long)diag.calculate_us,(unsigned long)diag.page_gap_us,
+                     diag.last_page);
             vTaskDelay(pdMS_TO_TICKS(100));
         }
         int64_t now=esp_timer_get_time();
