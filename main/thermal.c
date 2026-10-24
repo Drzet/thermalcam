@@ -100,7 +100,7 @@ static void initResampleMaps(void) {
 }
 
 // smooth 'heat' gradient via precomputed palette
-constexpr int PALETTE_SIZE = 256;
+enum { PALETTE_SIZE = 256 };
 static uint32_t tempPalette[PALETTE_SIZE];
 
 static uint32_t makeGradientColor(float n) {
@@ -149,6 +149,33 @@ static inline uint32_t tempToColorFast(float t, float minTemp, float maxTemp) {
 
   return tempPalette[idx];
 }
+
+static void renderFrame(uint8_t *bgr, const float *mlxFrame, float minTemp, float maxTemp) {
+  for (int y = 0; y < VIEW_H; ++y) {
+    const SampleCoord *ym = &yMap[y];
+
+    uint8_t *dst = bgr + ((y + 32) * IMAGE_W) * 3;
+    for (int x = 0; x < VIEW_W; ++x, dst += 3) {
+      const SampleCoord *xm = &xMap[x];
+
+      float t00 = mlxFrame[ym->i0 * MLX_W + xm->i0];
+      float t10 = mlxFrame[ym->i0 * MLX_W + xm->i1];
+      float t01 = mlxFrame[ym->i1 * MLX_W + xm->i0];
+      float t11 = mlxFrame[ym->i1 * MLX_W + xm->i1];
+
+      float tx0 = t00 * xm->w0 + t10 * xm->w1;
+      float tx1 = t01 * xm->w0 + t11 * xm->w1;
+      float t   = tx0 * ym->w0 + tx1 * ym->w1;
+
+      uint32_t rgb = tempToColorFast(t, minTemp, maxTemp);
+      dst[0] = (uint8_t)rgb;
+      dst[1] = (uint8_t)(rgb >> 8);
+      dst[2] = (uint8_t)(rgb >> 16);
+    }
+
+  }
+}
+
 
 void thermal_init(void)
 {
