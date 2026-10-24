@@ -9,7 +9,11 @@ The original S3 implementation remains in Git history and on main.
 
 - Experimental branch uses **ESP-IDF v6.0.3**, target **esp32p4**,
   matching the verified running P4 build. It relies on the v6.0.3
-  `esp_driver_i3c` legacy-I2C API.
+  `esp_driver_i3c` legacy-I2C API. In v6.0.3 this driver is gated by
+  `CONFIG_IDF_EXPERIMENTAL_FEATURES=y` (which enables the hidden
+  `CONFIG_I3C_MASTER_ENABLED=y`); the setting is included in
+  `sdkconfig.defaults`. If a local `sdkconfig` exists, enable **Make
+  experimental features visible** in `idf.py menuconfig` before building.
 - The flash layout uses 2 MiB; this is a build setting, not a measurement of the board capacity.
 - PSRAM required. Configured for 80 MHz; capacity is detected at boot.
 - `espressif/usb_device_uvc` **1.3.1**; transitive dependencies pinned by
