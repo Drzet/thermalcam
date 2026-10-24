@@ -19,7 +19,9 @@ static i3c_master_i2c_device_handle_t dev, dev_slow, dev_fast;
 static paramsMLX90640 params;
 static SemaphoreHandle_t params_mutex;
 static int64_t deadline;
-static uint16_t raw[834], eeprom[832];
+/* IDF v6.0.3 I3C FIFO uses 32-bit words when draining RX data. */
+static uint16_t raw[834] __attribute__((aligned(4)));
+static uint16_t eeprom[832] __attribute__((aligned(4)));
 static float temperatures[THERMAL_PIXELS];
 
 esp_err_t sensor_bus_init(void)
