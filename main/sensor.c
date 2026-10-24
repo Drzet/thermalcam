@@ -90,6 +90,19 @@ static int read_updated_subpage(uint16_t *frame, sensor_diag_t *diag)
         return -1;
     }
 
+    /* Read common calibration/ambient values before the pixel rows, so a
+     * newly completed opposite subpage cannot change them mid-read. */
+    if (MLX90640_I2CRead(SENSOR_ADDR, MLX90640_AUX_DATA_START_ADDRESS,
+                         MLX90640_AUX_NUM, &frame[768])) {
+        diag->failure="auxiliary I2C/deadline";
+        return -1;
+    }
+    if (MLX90640_I2CRead(SENSOR_ADDR, MLX90640_CTRL_REG, 1, &frame[832])) {
+        diag->failure="control-register I2C/deadline";
+        return -1;
+    }
+    frame[833] = (uint16_t)page;
+
     for (unsigned row = (unsigned)page; row < 24; row += 2) {
         unsigned offset = row * 32;
         if (MLX90640_I2CRead(SENSOR_ADDR, MLX90640_PIXEL_DATA_START_ADDRESS + offset,
@@ -102,17 +115,6 @@ static int read_updated_subpage(uint16_t *frame, sensor_diag_t *diag)
             return -1;
         } /* Upstream frame-data check. */
     }
-
-    if (MLX90640_I2CRead(SENSOR_ADDR, MLX90640_AUX_DATA_START_ADDRESS,
-                         MLX90640_AUX_NUM, &frame[768])) {
-        diag->failure="auxiliary I2C/deadline";
-        return -1;
-    }
-    if (MLX90640_I2CRead(SENSOR_ADDR, MLX90640_CTRL_REG, 1, &frame[832])) {
-        diag->failure="control-register I2C/deadline";
-        return -1;
-    }
-    frame[833] = (uint16_t)page;
 
     /* Upstream auxiliary-data validation, retained for the shortened read. */
     const unsigned ranges[][2] = {
@@ -161,15 +163,20 @@ bool sensor_capture(thermal_frame_t *out, sensor_diag_t *diag)
         }
         last_page=page;
         last_page_us=now;
-        /* Reject a read overlapped by the next conversion. */
+        /* The other subpage is stored in separate RAM rows. A new ready
+         * flag for that OTHER subpage is normal and must not reject this
+         * read. Only a same-page update means our rows may be overwritten. */
         uint16_t status;
         if(MLX90640_I2CRead(SENSOR_ADDR,MLX90640_STATUS_REG,1,&status)) {
             diag->failure="post-read status I2C/deadline";
             return false;
         }
         if(MLX90640_GET_DATA_READY(status)) {
-            diag->failure="new data ready after read";
-            return false;
+            if(MLX90640_GET_FRAME(status)==page) {
+                diag->failure="same subpage overwritten during read";
+                return false;
+            }
+            diag->opposite_ready++;
         }
         float ambient=MLX90640_GetTa(raw,&params);
         if(!isfinite(ambient)) { diag->failure="invalid ambient"; return false; }
