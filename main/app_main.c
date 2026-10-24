@@ -37,6 +37,8 @@ static void sensor_task(void *arg)
     int64_t stats_since=esp_timer_get_time();
     unsigned good_frames=0, rejected_frames=0;
     uint32_t max_capture_ms=0;
+    uint32_t max_read_us=0, max_calc_us=0;
+    unsigned opposite_ready_count=0;
     for(;;) {
         if(!configured) {
             int rc=sensor_configure();
@@ -50,6 +52,9 @@ static void sensor_task(void *arg)
         bool ok=sensor_capture(candidate,&diag);
         uint32_t capture_ms=(uint32_t)((esp_timer_get_time()-capture_start)/1000);
         if(capture_ms>max_capture_ms) max_capture_ms=capture_ms;
+        if(diag.read_us>max_read_us) max_read_us=diag.read_us;
+        if(diag.calculate_us>max_calc_us) max_calc_us=diag.calculate_us;
+        opposite_ready_count+=diag.opposite_ready;
         xSemaphoreTake(state_lock,portMAX_DELAY);
         acquisition_error=!ok;
         if(ok) { candidate->sequence=++sequence; latest=*candidate; }
@@ -67,9 +72,12 @@ static void sensor_task(void *arg)
         int64_t now=esp_timer_get_time();
         if(now-stats_since>=5000000) {
             uint32_t fps10=(uint32_t)((uint64_t)good_frames*10000000ULL/(uint64_t)(now-stats_since));
-            ESP_LOGI(TAG,"Acquisition: %u.%u full fps, good=%u rejected=%u max_capture=%lu ms",
-                     fps10/10,fps10%10,good_frames,rejected_frames,(unsigned long)max_capture_ms);
-            good_frames=0; rejected_frames=0; max_capture_ms=0; stats_since=now;
+            ESP_LOGI(TAG,"Acquisition: %u.%u full fps, good=%u rejected=%u max_capture=%lu ms max_read=%lu us max_calc=%lu us next_ready=%u",
+                     fps10/10,fps10%10,good_frames,rejected_frames,
+                     (unsigned long)max_capture_ms,(unsigned long)max_read_us,
+                     (unsigned long)max_calc_us,opposite_ready_count);
+            good_frames=0; rejected_frames=0; max_capture_ms=0;
+            max_read_us=0; max_calc_us=0; opposite_ready_count=0; stats_since=now;
         }
         vTaskDelay(pdMS_TO_TICKS(1));
     }
