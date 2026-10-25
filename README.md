@@ -61,19 +61,33 @@ your connected board. No board was flashed during development.
 
 ## Behaviour
 
-- Advertises **480×320 MJPEG at 32 fps**, matching the theoretical upper
-  bound for 64 sensor subpages/s (two subpages per complete 32×24 thermal measurement).
+- Advertises **480×320 MJPEG at 16 fps**, matching the theoretical upper
+  bound for 32 sensor subpages/s (two subpages per complete 32×24 thermal measurement).
   USB presentation rate is distinct from the rate of fresh thermal frames;
   any shortage is visible in the five-second acquisition statistics.
   Existing local `sdkconfig` files must be regenerated or adjusted after
   changing `sdkconfig.defaults` to ensure the UVC descriptor changes
-  (`CONFIG_UVC_CAM1_FRAMERATE=32`).
+  (`CONFIG_UVC_CAM1_FRAMERATE=16`).
 - The thermal view remains 384×288, interpolated from 32×24 measurements.
   Upscaling does not add thermal resolution. The original cold-white/hot-black
   palette is retained.
 - Physical button on **GPIO3 to GND**: cycle **Auto**, **Body (30–45°C)**
   and **Home (-20–100°C)**, with 50 ms debounce and one change per press.
   The USB image shows the active mode and camera status; labels are not touch controls.
+- **UVC Brightness control selects thermal mode:** integer `0 = AUTO`,
+  `1 = BODY`, `2 = HOME` (minimum 0, maximum 2, step 1, default 0).
+  This is a standard UVC Processing Unit brightness control repurposed for
+  mode selection, **not** actual pixel brightness adjustment. GET_CUR reflects
+  changes made by the physical button as well as USB controls.
+  The `uvc_mode_control.c` shim inserts the PU in the stock descriptor and
+  intercepts brightness GET/SET requests; all other requests pass to TinyUSB.
+  The shim relies on linker wrappers for `usb_device_uvc` 1.3.1 /
+  TinyUSB 0.19.0~3. It has not been tested with nExt Camera or on hardware.
+  After flashing, reconnect USB and look for `UVC PU brightness enabled`
+  during host enumeration. On Linux, `v4l2-ctl --list-ctrls` should show
+  brightness 0..2, and `v4l2-ctl --set-ctrl=brightness=1` should
+  switch to BODY.
+
 - Sidebar shows measured extrema, frame age, repaired pixel count and colour
   scale values. Measured extrema are not widened to create the display span.
 - USB video includes labels and errors. It does **not** transport radiometric
