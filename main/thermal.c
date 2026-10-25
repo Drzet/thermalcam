@@ -103,6 +103,49 @@ static void initResampleMaps(void) {
 enum { PALETTE_SIZE = 256 };
 static uint32_t tempPalette[PALETTE_SIZE];
 
+/* Inferno: established 256-colour perceptually uniform sequential palette.
+ * Nathaniel J. Smith and Stefan van der Walt; CC0/public domain.
+ * Exact published BIDS/colormap inferno RGB data quantised to RGB888.
+ * https://github.com/BIDS/colormap/blob/master/colormaps.py
+ * Index 0 = cold (near black), 255 = hot (yellow-white).
+ * Only BODY mode uses this table; AUTO/HOME retain tempPalette.
+ */
+static const uint32_t bodyPalette[PALETTE_SIZE] = {
+  0x000004u, 0x010005u, 0x010106u, 0x010108u, 0x02010Au, 0x02020Cu, 0x02020Eu, 0x030210u,
+  0x040312u, 0x040314u, 0x050417u, 0x060419u, 0x07051Bu, 0x08051Du, 0x09061Fu, 0x0A0722u,
+  0x0B0724u, 0x0C0826u, 0x0D0829u, 0x0E092Bu, 0x10092Du, 0x110A30u, 0x120A32u, 0x140B34u,
+  0x150B37u, 0x160B39u, 0x180C3Cu, 0x190C3Eu, 0x1B0C41u, 0x1C0C43u, 0x1E0C45u, 0x1F0C48u,
+  0x210C4Au, 0x230C4Cu, 0x240C4Fu, 0x260C51u, 0x280B53u, 0x290B55u, 0x2B0B57u, 0x2D0B59u,
+  0x2F0A5Bu, 0x310A5Cu, 0x320A5Eu, 0x340A5Fu, 0x360961u, 0x380962u, 0x390963u, 0x3B0964u,
+  0x3D0965u, 0x3E0966u, 0x400A67u, 0x420A68u, 0x440A68u, 0x450A69u, 0x470B6Au, 0x490B6Au,
+  0x4A0C6Bu, 0x4C0C6Bu, 0x4D0D6Cu, 0x4F0D6Cu, 0x510E6Cu, 0x520E6Du, 0x540F6Du, 0x550F6Du,
+  0x57106Eu, 0x59106Eu, 0x5A116Eu, 0x5C126Eu, 0x5D126Eu, 0x5F136Eu, 0x61136Eu, 0x62146Eu,
+  0x64156Eu, 0x65156Eu, 0x67166Eu, 0x69166Eu, 0x6A176Eu, 0x6C186Eu, 0x6D186Eu, 0x6F196Eu,
+  0x71196Eu, 0x721A6Eu, 0x741A6Eu, 0x751B6Eu, 0x771C6Du, 0x781C6Du, 0x7A1D6Du, 0x7C1D6Du,
+  0x7D1E6Du, 0x7F1E6Cu, 0x801F6Cu, 0x82206Cu, 0x84206Bu, 0x85216Bu, 0x87216Bu, 0x88226Au,
+  0x8A226Au, 0x8C2369u, 0x8D2369u, 0x8F2469u, 0x902568u, 0x922568u, 0x932667u, 0x952667u,
+  0x972766u, 0x982766u, 0x9A2865u, 0x9B2964u, 0x9D2964u, 0x9F2A63u, 0xA02A63u, 0xA22B62u,
+  0xA32C61u, 0xA52C60u, 0xA62D60u, 0xA82E5Fu, 0xA92E5Eu, 0xAB2F5Eu, 0xAD305Du, 0xAE305Cu,
+  0xB0315Bu, 0xB1325Au, 0xB3325Au, 0xB43359u, 0xB63458u, 0xB73557u, 0xB93556u, 0xBA3655u,
+  0xBC3754u, 0xBD3853u, 0xBF3952u, 0xC03A51u, 0xC13A50u, 0xC33B4Fu, 0xC43C4Eu, 0xC63D4Du,
+  0xC73E4Cu, 0xC83F4Bu, 0xCA404Au, 0xCB4149u, 0xCC4248u, 0xCE4347u, 0xCF4446u, 0xD04545u,
+  0xD24644u, 0xD34743u, 0xD44842u, 0xD54A41u, 0xD74B3Fu, 0xD84C3Eu, 0xD94D3Du, 0xDA4E3Cu,
+  0xDB503Bu, 0xDD513Au, 0xDE5238u, 0xDF5337u, 0xE05536u, 0xE15635u, 0xE25734u, 0xE35933u,
+  0xE45A31u, 0xE55C30u, 0xE65D2Fu, 0xE75E2Eu, 0xE8602Du, 0xE9612Bu, 0xEA632Au, 0xEB6429u,
+  0xEB6628u, 0xEC6726u, 0xED6925u, 0xEE6A24u, 0xEF6C23u, 0xEF6E21u, 0xF06F20u, 0xF1711Fu,
+  0xF1731Du, 0xF2741Cu, 0xF3761Bu, 0xF37819u, 0xF47918u, 0xF57B17u, 0xF57D15u, 0xF67E14u,
+  0xF68013u, 0xF78212u, 0xF78410u, 0xF8850Fu, 0xF8870Eu, 0xF8890Cu, 0xF98B0Bu, 0xF98C0Au,
+  0xF98E09u, 0xFA9008u, 0xFA9207u, 0xFA9407u, 0xFB9606u, 0xFB9706u, 0xFB9906u, 0xFB9B06u,
+  0xFB9D07u, 0xFC9F07u, 0xFCA108u, 0xFCA309u, 0xFCA50Au, 0xFCA60Cu, 0xFCA80Du, 0xFCAA0Fu,
+  0xFCAC11u, 0xFCAE12u, 0xFCB014u, 0xFCB216u, 0xFCB418u, 0xFBB61Au, 0xFBB81Du, 0xFBBA1Fu,
+  0xFBBC21u, 0xFBBE23u, 0xFAC026u, 0xFAC228u, 0xFAC42Au, 0xFAC62Du, 0xF9C72Fu, 0xF9C932u,
+  0xF9CB35u, 0xF8CD37u, 0xF8CF3Au, 0xF7D13Du, 0xF7D340u, 0xF6D543u, 0xF6D746u, 0xF5D949u,
+  0xF5DB4Cu, 0xF4DD4Fu, 0xF4DF53u, 0xF4E156u, 0xF3E35Au, 0xF3E55Du, 0xF2E661u, 0xF2E865u,
+  0xF2EA69u, 0xF1EC6Du, 0xF1ED71u, 0xF1EF75u, 0xF1F179u, 0xF2F27Du, 0xF2F482u, 0xF3F586u,
+  0xF3F68Au, 0xF4F88Eu, 0xF5F992u, 0xF6FA96u, 0xF8FB9Au, 0xF9FC9Du, 0xFAFDA1u, 0xFCFFA4u
+};
+
+
 static uint32_t makeGradientColor(float n) {
   float r, g, b;
 
@@ -137,12 +180,13 @@ static void initTempPalette(void) {
 
 /* Keep the main-branch lookup table, but calculate the range conversion
  * once per image rather than dividing once per output pixel. */
-static inline uint32_t tempToColorFast(float t, float minTemp, float scale)
+static inline uint32_t tempToColorFast(float t, float minTemp, float scale,
+                                       const uint32_t *palette)
 {
   float index = (t - minTemp) * scale;
   if (index < 0.0f) index = 0.0f;
   if (index > (float)(PALETTE_SIZE - 1)) index = (float)(PALETTE_SIZE - 1);
-  return tempPalette[(int)(index + 0.5f)];
+  return palette[(int)(index + 0.5f)];
 }
 
 /* Two reusable horizontal scanlines: 2 * 384 * sizeof(float) = 3072 B.
@@ -159,7 +203,8 @@ static void interpolateHorizontal(float *out, const float *sourceRow)
   }
 }
 
-static void renderFrame(uint8_t *bgr, const float *mlxFrame, float minTemp, float maxTemp)
+static void renderFrame(uint8_t *bgr, const float *mlxFrame, float minTemp, float maxTemp,
+                        const uint32_t *palette)
 {
   const float colourScale = (float)(PALETTE_SIZE - 1) / (maxTemp - minTemp);
   float *top = horizontalRows[0], *bottom = horizontalRows[1];
@@ -190,7 +235,7 @@ static void renderFrame(uint8_t *bgr, const float *mlxFrame, float minTemp, floa
     uint8_t *dst = bgr + ((y + 32) * IMAGE_W) * 3;
     for (int x = 0; x < VIEW_W; ++x, dst += 3) {
       float t = top[x] * ym->w0 + bottom[x] * ym->w1;
-      uint32_t rgb = tempToColorFast(t, minTemp, colourScale);
+      uint32_t rgb = tempToColorFast(t, minTemp, colourScale, palette);
       dst[0] = (uint8_t)rgb;
       dst[1] = (uint8_t)(rgb >> 8);
       dst[2] = (uint8_t)(rgb >> 16);
@@ -245,14 +290,15 @@ void thermal_render(uint8_t *b,const thermal_frame_t *f,thermal_mode_t mode,
     text(b,368,9,names[mode],0xffffff,2);
     if(!f->valid) { text(b,40,150,"WAITING FOR VALID FRAME",0xff4040,3); return; }
     float lo,hi; thermal_range(f,mode,&lo,&hi);
-    renderFrame(b, f->pixels, lo, hi);
+    const uint32_t *palette = (mode == MODE_BODY) ? bodyPalette : tempPalette;
+    renderFrame(b, f->pixels, lo, hi, palette);
     char str[32];
     snprintf(str,sizeof(str),"MIN %.1f",f->min); text(b,390,40,str,0xffffff,1);
     snprintf(str,sizeof(str),"MAX %.1f",f->max); text(b,390,51,str,0xffffff,1);
     snprintf(str,sizeof(str),"AGE %lu MS",(unsigned long)age_ms); text(b,390,62,str,0xffffff,1);
     snprintf(str,sizeof(str),"FIX %u",f->repaired); text(b,390,73,str,0xffffff,1);
     for(int y=95;y<=295;y++) for(int x=394;x<414;x++)
-        pixel(b,x,y,tempPalette[PALETTE_SIZE-1-((y-95)*(PALETTE_SIZE-1)+100)/200]);
+        pixel(b,x,y,palette[PALETTE_SIZE-1-((y-95)*(PALETTE_SIZE-1)+100)/200]);
     for(int i=0;i<=4;i++) {
         float t=hi-(hi-lo)*i/4.f; int y=95+i*50;
         snprintf(str,sizeof(str),"%.1f",t); text(b,422,y-2,str,0xffffff,1);
