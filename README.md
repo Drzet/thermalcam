@@ -71,10 +71,11 @@ your connected board. No board was flashed during development.
 - The thermal view remains 384×288, interpolated from 32×24 measurements.
   Upscaling does not add thermal resolution. AUTO/HOME use the original
   gradient colours with the corrected direction (cold black/blue, hot
-  yellow/white). BODY uses the published 256-entry Inferno palette (cold
-  near-black, hot yellow-white) to increase perceptual separation across
-  its fixed 30–45°C range. Both palettes use the original linear 256-index
-  mapping, with temperatures outside the selected range clipped.
+  yellow/white). BODY uses the published 256-entry Turbo palette
+  (cold dark-purple/blue through turquoise, green, orange, to hot red).
+  This is the standard Anton Mikhailov / Google colormap, not a custom
+  gradient. Both palettes use the original linear 256-index mapping,
+  with BODY fixed at 30–45°C and out-of-range temperatures clipped.
 - Physical button on **GPIO3 to GND**: cycle **Auto**, **Body (30–45°C)**
   and **Home (-20–100°C)**, with 50 ms debounce and one change per press.
   The USB image shows the active mode and camera status; labels are not touch controls.
