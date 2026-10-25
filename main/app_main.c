@@ -253,6 +253,7 @@ void app_main(void)
     uvc_device_config_t uvc={.uvc_buffer=transfer_buffer,.uvc_buffer_size=JPEG_CAPACITY,
         .start_cb=stream_start,.stop_cb=stream_stop,.fb_get_cb=stream_get,.fb_return_cb=stream_return};
     ESP_ERROR_CHECK(uvc_device_config(0,&uvc));
+    thermalcam_uvc_control_init(); /* Retain the wrapped UVC handlers at link time. */
     ESP_ERROR_CHECK(uvc_device_init());
     ESP_LOGI(TAG,"UVC compiled descriptor: MJPEG %dx%d at %d fps",IMAGE_W,IMAGE_H,
              CONFIG_UVC_CAM1_FRAMERATE);
