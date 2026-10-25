@@ -171,10 +171,11 @@ static uint32_t makeGradientColor(float n) {
 }
 
 static void initTempPalette(void) {
+  /* Index increases with temperature: cold = dark/blue, hot = yellow/white.
+   * Previously (1 - normalized) accidentally reversed this direction. */
   for (int i = 0; i < PALETTE_SIZE; ++i) {
     float normalized = i / 255.0f;
-    float n = 1.0f - normalized;
-    tempPalette[i] = makeGradientColor(n);
+    tempPalette[i] = makeGradientColor(normalized);
   }
 }
 
