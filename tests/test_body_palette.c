@@ -51,8 +51,8 @@ int main(void)
             assert(bodyPalette[i] != bodyPalette[j]);
         float t = 30.0f + 15.0f * ((float)i / 255.0f);
         assert(tempToColorFast(t, 30.0f, body_scale, bodyPalette) == bodyPalette[i]);
-        /* AUTO/HOME original gradient generation must remain intact. */
-        assert(tempPalette[i] == makeGradientColor(1.0f - i / 255.0f));
+        /* AUTO/HOME preserve original gradient stops, corrected cold->hot order. */
+        assert(tempPalette[i] == makeGradientColor(i / 255.0f));
     }
 
     assert(tempToColorFast(-50.0f, 30.0f, body_scale, bodyPalette) == bodyPalette[0]);
@@ -77,7 +77,11 @@ int main(void)
         assert(output_rgb(image, 394, 295) == bodyPalette[0]);
     }
 
-    /* AUTO and HOME keep exactly the previous LUT and their own ranges. */
+    /* AUTO/HOME use the original gradient, now oriented cold black -> hot white. */
+    assert(tempPalette[0] == 0x000000u);
+    assert(tempPalette[255] == 0xFFFFFFu);
+    assert((tempPalette[64] & 0xFFu) > 0); /* blue at low temperatures */
+    assert((tempPalette[255] >> 16) == 255); /* high temperatures are bright */
     fill_frame(&frame, 32.0f);
     thermal_render(image, &frame, MODE_AUTO, false, 0);
     assert(output_rgb(image, pixel_x, pixel_y) ==
@@ -92,6 +96,6 @@ int main(void)
     assert(output_rgb(image, 394, 295) == tempPalette[0]);
 
     free(image);
-    puts("PASS: Body Inferno 256-index mapping, clipping, direction, sidebar; AUTO/HOME unchanged");
+    puts("PASS: Body Inferno 256-index mapping and clipping; AUTO/HOME corrected cold-to-hot palette; sidebar");
     return 0;
 }
