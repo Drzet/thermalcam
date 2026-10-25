@@ -146,14 +146,14 @@ int sensor_configure(void)
     if(rc) return rc;
     rc=MLX90640_SetInterleavedMode(SENSOR_ADDR); if(rc) return rc;
     rc=MLX90640_SetResolution(SENSOR_ADDR,2); if(rc) return rc; /* 18 bit */
-    rc=MLX90640_SetRefreshRate(SENSOR_ADDR,7); if(rc) return rc; /* 64 subpages/s */
+    rc=MLX90640_SetRefreshRate(SENSOR_ADDR,6); if(rc) return rc; /* 32 subpages/s */
     if(MLX90640_GetCurMode(SENSOR_ADDR)!=0 || MLX90640_GetCurResolution(SENSOR_ADDR)!=2 ||
-       MLX90640_GetRefreshRate(SENSOR_ADDR)!=7) return -1;
+       MLX90640_GetRefreshRate(SENSOR_ADDR)!=6) return -1;
 
     /* Switch to 1 MHz only after EEPROM and configuration operations.
      * Verify that fast-mode-plus register reads actually work. */
     dev=dev_fast;
-    if(MLX90640_GetRefreshRate(SENSOR_ADDR)!=7) {
+    if(MLX90640_GetRefreshRate(SENSOR_ADDR)!=6) {
         dev=dev_slow;
         return -1;
     }
@@ -162,8 +162,8 @@ int sensor_configure(void)
 
 /*
  * TV/interleaved mode updates one complete 32-pixel row out of every two.
- * Reading only those twelve rows halves pixel I2C traffic. At 64
- * subpages/s, this keeps bus occupancy below the 15.625 ms page interval
+ * Reading only those twelve rows halves pixel I2C traffic. At 32
+ * subpages/s, this keeps bus occupancy below the 31.25 ms page interval
  * when the P4 I3C peripheral operates in 1 MHz legacy-I2C mode.
  * Keep Melexis' 834-word frame layout for its temperature-calculation API.
  */
