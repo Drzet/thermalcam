@@ -1,6 +1,8 @@
 #pragma once
 #include <stdint.h>
-/* Implemented in app_main.c; both physical button and UVC use one mode. */
-#define THERMAL_MODE_COUNT 3
+#include "thermal.h"
+
+/* Keep the USB control range tied to the firmware's real mode enum. */
+#define THERMAL_MODE_COUNT MODE_COUNT
 uint8_t thermalcam_uvc_get_mode(void);
 void thermalcam_uvc_set_mode(uint8_t value);
