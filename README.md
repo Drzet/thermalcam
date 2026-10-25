@@ -69,8 +69,12 @@ your connected board. No board was flashed during development.
   changing `sdkconfig.defaults` to ensure the UVC descriptor changes
   (`CONFIG_UVC_CAM1_FRAMERATE=16`).
 - The thermal view remains 384×288, interpolated from 32×24 measurements.
-  Upscaling does not add thermal resolution. The original cold-white/hot-black
-  palette is retained.
+  Upscaling does not add thermal resolution. AUTO/HOME use the original
+  gradient colours with the corrected direction (cold black/blue, hot
+  yellow/white). BODY uses the published 256-entry Inferno palette (cold
+  near-black, hot yellow-white) to increase perceptual separation across
+  its fixed 30–45°C range. Both palettes use the original linear 256-index
+  mapping, with temperatures outside the selected range clipped.
 - Physical button on **GPIO3 to GND**: cycle **Auto**, **Body (30–45°C)**
   and **Home (-20–100°C)**, with 50 ms debounce and one change per press.
   The USB image shows the active mode and camera status; labels are not touch controls.
@@ -125,7 +129,9 @@ pixels, rejects the whole frame. Infinity is treated as invalid, just like NaN.
 
 Emissivity remains **0.95**, with reflected temperature estimated as sensor
 ambient minus **8°C**, matching the Adafruit calculation previously used.
-Body mode changes the colour scale only, not calibration or emissivity.
+Body mode uses a separate colour lookup table, not a different temperature
+calibration or emissivity. The fixed 30–45°C mapping and endpoint clipping
+remain unchanged.
 
 Acquisition, temperature calculation, input and rendering are independent tasks.
 Rendering takes a short
