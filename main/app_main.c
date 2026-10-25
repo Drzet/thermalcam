@@ -13,6 +13,7 @@
 #include "driver/jpeg_encode.h"
 #include "usb_device_uvc.h"
 #include "thermal.h"
+#include "uvc_mode_control.h"
 #include "sensor.h"
 #include "camera_pins.h"
 #include "driver/gpio.h"
@@ -23,6 +24,19 @@ static SemaphoreHandle_t state_lock,jpeg_lock;
 static QueueHandle_t capture_queue;
 static thermal_frame_t latest;
 static thermal_mode_t mode;
+
+/* UVC control callback and physical button share the same atomic mode. */
+uint8_t thermalcam_uvc_get_mode(void)
+{
+    return (uint8_t)__atomic_load_n(&mode, __ATOMIC_RELAXED);
+}
+
+void thermalcam_uvc_set_mode(uint8_t value)
+{
+    if (value < MODE_COUNT)
+        __atomic_store_n(&mode, (thermal_mode_t)value, __ATOMIC_RELAXED);
+}
+
 static bool acquisition_error=true;
 static uvc_fb_t published;
 static uint8_t *rgb,*encoded;
@@ -154,9 +168,13 @@ static void button_task(void *arg)
         if(now-changed>=50000 && stable!=down) {
             stable=down;
             if(down) {
-                xSemaphoreTake(state_lock,portMAX_DELAY);
-                mode=(mode+1)%MODE_COUNT;
-                xSemaphoreGive(state_lock);
+                thermal_mode_t before, after;
+                do {
+                    before = __atomic_load_n(&mode, __ATOMIC_RELAXED);
+                    after = (thermal_mode_t)((before + 1) % MODE_COUNT);
+                } while (!__atomic_compare_exchange_n(&mode, &before, after,
+                                                       false, __ATOMIC_RELAXED,
+                                                       __ATOMIC_RELAXED));
             }
         }
         vTaskDelay(pdMS_TO_TICKS(10));
@@ -257,7 +275,7 @@ void app_main(void)
     for(;;) {
         bool fault; thermal_mode_t active_mode;
         xSemaphoreTake(state_lock,portMAX_DELAY);
-        fault=acquisition_error; active_mode=mode; *view=latest;
+        fault=acquisition_error; active_mode=__atomic_load_n(&mode, __ATOMIC_RELAXED); *view=latest;
         xSemaphoreGive(state_lock);
         if(view->valid && view->sequence!=last_rendered_sequence) {
             ++fresh;
