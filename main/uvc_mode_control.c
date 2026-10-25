@@ -118,6 +118,13 @@ uint8_t const *__wrap_tud_descriptor_configuration_cb(uint8_t index)
 static uint16_t brightness_word;
 static uint8_t brightness_info;
 
+void thermalcam_uvc_control_init(void)
+{
+    /* Call from app_main before USB is initialized. Also keeps the linker
+     * from discarding this translation unit and its --wrap entry points. */
+    brightness_word = thermalcam_uvc_get_mode();
+}
+
 bool __wrap_videod_control_xfer_cb(uint8_t rhport, uint8_t stage,
                                   tusb_control_request_t const *request)
 {
