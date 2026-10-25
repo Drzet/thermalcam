@@ -135,44 +135,66 @@ static void initTempPalette(void) {
   }
 }
 
-static inline uint32_t tempToColorFast(float t, float minTemp, float maxTemp) {
-  if (t < minTemp) t = minTemp;
-  if (t > maxTemp) t = maxTemp;
-
-  float n = (t - minTemp) / (maxTemp - minTemp);
-  if (n < 0.0f) n = 0.0f;
-  if (n > 1.0f) n = 1.0f;
-
-  int idx = (int)(n * 255.0f + 0.5f);
-  if (idx < 0) idx = 0;
-  if (idx >= PALETTE_SIZE) idx = PALETTE_SIZE - 1;
-
-  return tempPalette[idx];
+/* Keep the main-branch lookup table, but calculate the range conversion
+ * once per image rather than dividing once per output pixel. */
+static inline uint32_t tempToColorFast(float t, float minTemp, float scale)
+{
+  float index = (t - minTemp) * scale;
+  if (index < 0.0f) index = 0.0f;
+  if (index > (float)(PALETTE_SIZE - 1)) index = (float)(PALETTE_SIZE - 1);
+  return tempPalette[(int)(index + 0.5f)];
 }
 
-static void renderFrame(uint8_t *bgr, const float *mlxFrame, float minTemp, float maxTemp) {
+/* Two reusable horizontal scanlines: 2 * 384 * sizeof(float) = 3072 B.
+ * Separability of bilinear interpolation lets each source row be
+ * interpolated horizontally once, then reused across the output rows. */
+static float horizontalRows[2][VIEW_W];
+
+static void interpolateHorizontal(float *out, const float *sourceRow)
+{
+  for (int x = 0; x < VIEW_W; ++x) {
+    const SampleCoord *xm = &xMap[x];
+    out[x] = sourceRow[xm->i0] * xm->w0 +
+             sourceRow[xm->i1] * xm->w1;
+  }
+}
+
+static void renderFrame(uint8_t *bgr, const float *mlxFrame, float minTemp, float maxTemp)
+{
+  const float colourScale = (float)(PALETTE_SIZE - 1) / (maxTemp - minTemp);
+  float *top = horizontalRows[0], *bottom = horizontalRows[1];
+  int topRow = -1, bottomRow = -1;
+
   for (int y = 0; y < VIEW_H; ++y) {
     const SampleCoord *ym = &yMap[y];
 
+    /* The next top row is normally the previous bottom row.
+     * Reuse it instead of repeating its horizontal interpolation. */
+    if (ym->i0 == bottomRow) {
+      float *tmp = top;
+      top = bottom;
+      bottom = tmp;
+      topRow = bottomRow;
+      bottomRow = -1;
+    }
+
+    if (topRow != ym->i0) {
+      interpolateHorizontal(top, mlxFrame + ym->i0 * MLX_W);
+      topRow = ym->i0;
+    }
+    if (bottomRow != ym->i1) {
+      interpolateHorizontal(bottom, mlxFrame + ym->i1 * MLX_W);
+      bottomRow = ym->i1;
+    }
+
     uint8_t *dst = bgr + ((y + 32) * IMAGE_W) * 3;
     for (int x = 0; x < VIEW_W; ++x, dst += 3) {
-      const SampleCoord *xm = &xMap[x];
-
-      float t00 = mlxFrame[ym->i0 * MLX_W + xm->i0];
-      float t10 = mlxFrame[ym->i0 * MLX_W + xm->i1];
-      float t01 = mlxFrame[ym->i1 * MLX_W + xm->i0];
-      float t11 = mlxFrame[ym->i1 * MLX_W + xm->i1];
-
-      float tx0 = t00 * xm->w0 + t10 * xm->w1;
-      float tx1 = t01 * xm->w0 + t11 * xm->w1;
-      float t   = tx0 * ym->w0 + tx1 * ym->w1;
-
-      uint32_t rgb = tempToColorFast(t, minTemp, maxTemp);
+      float t = top[x] * ym->w0 + bottom[x] * ym->w1;
+      uint32_t rgb = tempToColorFast(t, minTemp, colourScale);
       dst[0] = (uint8_t)rgb;
       dst[1] = (uint8_t)(rgb >> 8);
       dst[2] = (uint8_t)(rgb >> 16);
     }
-
   }
 }
 
