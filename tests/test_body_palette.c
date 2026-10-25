@@ -43,9 +43,9 @@ int main(void)
     thermal_range(&frame, MODE_AUTO, &lo, &hi);
     assert(lo == 20.0f && hi == 40.0f);
 
-    /* Canonical Inferno cold/hot direction and all 256 distinct entries. */
-    assert(bodyPalette[0] == 0x000004u);
-    assert(bodyPalette[255] == 0xFCFFA4u);
+    /* Canonical Turbo cold-purple -> hot-red direction; every index addressable. */
+    assert(bodyPalette[0] == 0x30123Bu);
+    assert(bodyPalette[255] == 0x7A0403u);
     for (int i = 0; i < PALETTE_SIZE; ++i) {
         for (int j = 0; j < i; ++j)
             assert(bodyPalette[i] != bodyPalette[j]);
@@ -62,13 +62,18 @@ int main(void)
     assert(tempToColorFast(45.001f, 30.0f, body_scale, bodyPalette) == bodyPalette[255]);
     assert(tempToColorFast(100.0f, 30.0f, body_scale, bodyPalette) == bodyPalette[255]);
 
+    /* Test distinctive intermediate colours from the canonical Turbo LUT. */
+    assert(bodyPalette[85] == 0x1AE4B6u);  /* 35 C: turquoise */
+    assert(bodyPalette[119] == 0x88FF4Eu); /* 37 C: green */
+    assert(bodyPalette[170] == 0xFABA39u); /* 40 C: orange */
+
     uint8_t *image = (uint8_t *)malloc(IMAGE_BYTES);
     assert(image);
     const int pixel_x = 128, pixel_y = 150;
 
     /* All pixels and sidebar endpoints use the Body palette, with clipping. */
     const float temperatures[] = {-10.0f, 30.0f, 45.0f, 70.0f};
-    const uint32_t expected[] = {0x000004u, 0x000004u, 0xFCFFA4u, 0xFCFFA4u};
+    const uint32_t expected[] = {0x30123Bu, 0x30123Bu, 0x7A0403u, 0x7A0403u};
     for (unsigned k = 0; k < sizeof(temperatures)/sizeof(temperatures[0]); ++k) {
         fill_frame(&frame, temperatures[k]);
         thermal_render(image, &frame, MODE_BODY, false, 0);
@@ -96,6 +101,6 @@ int main(void)
     assert(output_rgb(image, 394, 295) == tempPalette[0]);
 
     free(image);
-    puts("PASS: Body Inferno 256-index mapping and clipping; AUTO/HOME corrected cold-to-hot palette; sidebar");
+    puts("PASS: Body Turbo 256-index mapping and clipping; AUTO/HOME palette retained; sidebar");
     return 0;
 }
