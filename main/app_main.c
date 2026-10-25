@@ -29,6 +29,15 @@ static uint8_t *rgb,*encoded;
 static size_t rgb_capacity,jpeg_capacity;
 static jpeg_encoder_handle_t encoder;
 
+/* USB callback counts, reported outside USB context every five seconds.
+ * "returned" means the UVC stack has copied the frame, not host delivery. */
+static portMUX_TYPE uvc_stats_lock = portMUX_INITIALIZER_UNLOCKED;
+static struct {
+    uint32_t requested, offered, returned, distinct_thermal;
+    uint32_t last_thermal_sequence;
+} uvc_stats;
+static uint32_t published_thermal_sequence;
+
 /* The I2C owner never performs full-frame thermal calculations. */
 static struct {
     uint32_t good, rejected, queue_drops;
@@ -176,14 +185,31 @@ static void stream_stop(void *ctx) { (void)ctx; ESP_LOGI(TAG,"UVC stopped"); }
 static uvc_fb_t *stream_get(void *ctx)
 {
     (void)ctx;
+    portENTER_CRITICAL(&uvc_stats_lock);
+    ++uvc_stats.requested;
+    portEXIT_CRITICAL(&uvc_stats_lock);
+
     if(xSemaphoreTake(jpeg_lock,pdMS_TO_TICKS(20))!=pdTRUE) return NULL;
     if(!published.len) { xSemaphoreGive(jpeg_lock); return NULL; }
+
+    portENTER_CRITICAL(&uvc_stats_lock);
+    ++uvc_stats.offered;
+    portEXIT_CRITICAL(&uvc_stats_lock);
     /* Driver copies to its own transfer buffer, then immediately calls return. */
     return &published;
 }
 static void stream_return(uvc_fb_t *fb,void *ctx)
 {
-    (void)fb; (void)ctx; xSemaphoreGive(jpeg_lock);
+    (void)fb; (void)ctx;
+    portENTER_CRITICAL(&uvc_stats_lock);
+    ++uvc_stats.returned;
+    if(published_thermal_sequence &&
+       published_thermal_sequence!=uvc_stats.last_thermal_sequence) {
+        ++uvc_stats.distinct_thermal;
+        uvc_stats.last_thermal_sequence=published_thermal_sequence;
+    }
+    portEXIT_CRITICAL(&uvc_stats_lock);
+    xSemaphoreGive(jpeg_lock);
 }
 
 void app_main(void)
@@ -221,33 +247,96 @@ void app_main(void)
     thermal_frame_t *view=calloc(1,sizeof(*view)); assert(view);
     jpeg_encode_cfg_t cfg={.width=IMAGE_W,.height=IMAGE_H,.src_type=JPEG_ENCODE_IN_FORMAT_RGB888,
         .sub_sample=JPEG_DOWN_SAMPLING_YUV444,.image_quality=80};
+
     TickType_t next=xTaskGetTickCount();
+    int64_t video_since=esp_timer_get_time();
+    uint32_t last_rendered_sequence=0;
+    uint32_t renders=0, fresh=0, jpeg_ok=0, publishes=0;
+    uint64_t render_total=0, jpeg_total=0, publish_total=0;
+    uint32_t render_max=0, jpeg_max=0, publish_max=0;
     for(;;) {
         bool fault; thermal_mode_t active_mode;
         xSemaphoreTake(state_lock,portMAX_DELAY);
         fault=acquisition_error; active_mode=mode; *view=latest;
         xSemaphoreGive(state_lock);
+        if(view->valid && view->sequence!=last_rendered_sequence) {
+            ++fresh;
+            last_rendered_sequence=view->sequence;
+        }
         int64_t age=view->valid?(esp_timer_get_time()-view->captured_us)/1000:0;
         bool stale=fault || age>1000;
+
+        int64_t start=esp_timer_get_time();
         thermal_render(rgb,view,active_mode,stale,age>UINT32_MAX?UINT32_MAX:(uint32_t)age);
+        uint32_t render_us=(uint32_t)(esp_timer_get_time()-start);
+        ++renders;
+        render_total+=render_us;
+        if(render_us>render_max) render_max=render_us;
+
         uint32_t bytes=0;
+        start=esp_timer_get_time();
         esp_err_t e=jpeg_encoder_process(encoder,&cfg,rgb,IMAGE_BYTES,encoded,jpeg_capacity,&bytes);
+        uint32_t jpeg_us=(uint32_t)(esp_timer_get_time()-start);
+        jpeg_total+=jpeg_us;
+        if(jpeg_us>jpeg_max) jpeg_max=jpeg_us;
+
         if(e==ESP_OK && bytes>0 && bytes<=JPEG_CAPACITY) {
+            ++jpeg_ok;
             static bool first_jpeg_logged;
             if(!first_jpeg_logged) {
                 ESP_LOGI(TAG,"First JPEG encoded: %lu bytes",(unsigned long)bytes);
                 first_jpeg_logged=true;
             }
+            start=esp_timer_get_time();
             xSemaphoreTake(jpeg_lock,portMAX_DELAY);
             memcpy(published.buf,encoded,bytes); published.len=bytes;
             int64_t now=esp_timer_get_time();
             published.timestamp.tv_sec=now/1000000;
             published.timestamp.tv_usec=now%1000000;
+            published_thermal_sequence=view->valid?view->sequence:0;
             xSemaphoreGive(jpeg_lock);
+            uint32_t publish_us=(uint32_t)(esp_timer_get_time()-start);
+            ++publishes;
+            publish_total+=publish_us;
+            if(publish_us>publish_max) publish_max=publish_us;
         } else {
             /* Never silently keep serving old video if encoding fails. */
             xSemaphoreTake(jpeg_lock,portMAX_DELAY); published.len=0; xSemaphoreGive(jpeg_lock);
             ESP_LOGE(TAG,"JPEG failed: %s, %lu bytes",esp_err_to_name(e),(unsigned long)bytes);
+        }
+
+        int64_t now=esp_timer_get_time();
+        if(now-video_since>=5000000) {
+            uint32_t period_us=(uint32_t)(now-video_since);
+            uint32_t render_fps10=(uint32_t)((uint64_t)renders*10000000ULL/period_us);
+            uint32_t fresh_fps10=(uint32_t)((uint64_t)fresh*10000000ULL/period_us);
+            uint32_t jpeg_fps10=(uint32_t)((uint64_t)jpeg_ok*10000000ULL/period_us);
+            uint32_t publish_fps10=(uint32_t)((uint64_t)publishes*10000000ULL/period_us);
+            ESP_LOGI(TAG,"Video: render=%lu.%lu/s fresh=%lu.%lu/s jpeg=%lu.%lu/s publish=%lu.%lu/s "
+                     "render_avg/max=%lu/%lu us jpeg_avg/max=%lu/%lu us publish_avg/max=%lu/%lu us",
+                     (unsigned long)(render_fps10/10),(unsigned long)(render_fps10%10),
+                     (unsigned long)(fresh_fps10/10),(unsigned long)(fresh_fps10%10),
+                     (unsigned long)(jpeg_fps10/10),(unsigned long)(jpeg_fps10%10),
+                     (unsigned long)(publish_fps10/10),(unsigned long)(publish_fps10%10),
+                     (unsigned long)(render_total/renders),(unsigned long)render_max,
+                     (unsigned long)(jpeg_total/renders),(unsigned long)jpeg_max,
+                     (unsigned long)(publishes?publish_total/publishes:0),(unsigned long)publish_max);
+            uint32_t requested,offered,returned,distinct;
+            portENTER_CRITICAL(&uvc_stats_lock);
+            requested=uvc_stats.requested; offered=uvc_stats.offered;
+            returned=uvc_stats.returned; distinct=uvc_stats.distinct_thermal;
+            uvc_stats.requested=uvc_stats.offered=uvc_stats.returned=0;
+            uvc_stats.distinct_thermal=0;
+            portEXIT_CRITICAL(&uvc_stats_lock);
+            ESP_LOGI(TAG,"UVC callbacks/5s: requested=%lu offered=%lu returned=%lu "
+                     "distinct_thermal=%lu (not USB completion)",
+                     (unsigned long)requested,(unsigned long)offered,
+                     (unsigned long)returned,(unsigned long)distinct);
+
+            renders=fresh=jpeg_ok=publishes=0;
+            render_total=jpeg_total=publish_total=0;
+            render_max=jpeg_max=publish_max=0;
+            video_since=now;
         }
         vTaskDelayUntil(&next,pdMS_TO_TICKS(1000/32));
     }
