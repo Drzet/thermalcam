@@ -146,14 +146,14 @@ int sensor_configure(void)
     if(rc) return rc;
     rc=MLX90640_SetInterleavedMode(SENSOR_ADDR); if(rc) return rc;
     rc=MLX90640_SetResolution(SENSOR_ADDR,2); if(rc) return rc; /* 18 bit */
-    rc=MLX90640_SetRefreshRate(SENSOR_ADDR,6); if(rc) return rc; /* 32 subpages/s */
+    rc=MLX90640_SetRefreshRate(SENSOR_ADDR,5); if(rc) return rc; /* 32 subpages/s */
     if(MLX90640_GetCurMode(SENSOR_ADDR)!=0 || MLX90640_GetCurResolution(SENSOR_ADDR)!=2 ||
-       MLX90640_GetRefreshRate(SENSOR_ADDR)!=6) return -1;
+       MLX90640_GetRefreshRate(SENSOR_ADDR)!=5) return -1;
 
     /* Switch to 1 MHz only after EEPROM and configuration operations.
      * Verify that fast-mode-plus register reads actually work. */
     dev=dev_fast;
-    if(MLX90640_GetRefreshRate(SENSOR_ADDR)!=6) {
+    if(MLX90640_GetRefreshRate(SENSOR_ADDR)!=5) {
         dev=dev_slow;
         return -1;
     }
@@ -251,7 +251,7 @@ bool sensor_capture(sensor_pair_t *out, sensor_diag_t *diag)
         int64_t now=esp_timer_get_time();
         if(last_page_us) diag->page_gap_us=(uint32_t)(now-last_page_us);
         if(last_page==page) { diag->failure="repeated subpage"; return false; }
-        if(last_page_us && now-last_page_us>50000) {
+        if(last_page_us && now-last_page_us>100000) {
             diag->failure="subpage gap exceeds 50ms";
             return false;
         }

@@ -74,7 +74,7 @@ static void sensor_task(void *arg)
                 continue;
             }
             configured=true;
-            ESP_LOGI(TAG,"MLX90640 configured: 18-bit, 32 subpages/s (up to 16 full fps), I3C legacy-I2C 1 MHz (EEPROM 400 kHz)");
+            ESP_LOGI(TAG,"MLX90640 configured: 18-bit, 16 subpages/s (up to 8 full fps), I3C legacy-I2C 1 MHz (EEPROM 400 kHz)");
         }
         int64_t start=esp_timer_get_time();
         sensor_diag_t diag;
