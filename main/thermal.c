@@ -293,15 +293,15 @@ void thermal_render(uint8_t *b,const thermal_frame_t *f,thermal_mode_t mode,
     const uint32_t *palette = (mode == MODE_BODY) ? bodyPalette : tempPalette;
     renderFrame(b, f->pixels, lo, hi, palette);
     char str[32];
-    snprintf(str,sizeof(str),"MIN %.1f",f->min); text(b,390,40,str,0xffffff,1);
-    snprintf(str,sizeof(str),"MAX %.1f",f->max); text(b,390,51,str,0xffffff,1);
-    snprintf(str,sizeof(str),"AGE %lu MS",(unsigned long)age_ms); text(b,390,62,str,0xffffff,1);
-    snprintf(str,sizeof(str),"FIX %u",f->repaired); text(b,390,73,str,0xffffff,1);
+    snprintf(str,sizeof(str),"MIN %.1f",f->min); text(b,390,40,str,0xffffff,2);
+    snprintf(str,sizeof(str),"MAX %.1f",f->max); text(b,390,54,str,0xffffff,2);
+    snprintf(str,sizeof(str),"AGE %lu MS",(unsigned long)age_ms); text(b,390,70,str,0xffffff,1);
+    snprintf(str,sizeof(str),"FIX %u",f->repaired); text(b,390,81,str,0xffffff,1);
     for(int y=95;y<=295;y++) for(int x=394;x<414;x++)
         pixel(b,x,y,palette[PALETTE_SIZE-1-((y-95)*(PALETTE_SIZE-1)+100)/200]);
     for(int i=0;i<=4;i++) {
         float t=hi-(hi-lo)*i/4.f; int y=95+i*50;
-        snprintf(str,sizeof(str),"%.1f",t); text(b,422,y-2,str,0xffffff,1);
+        snprintf(str,sizeof(str),"%.1f",t); text(b,422,y-2,str,0xffffff,2);
     }
     text(b,420,309,"C",0xffffff,1);
     if(stale) text(b,8,300,"STALE",0xff4040,2);
