@@ -286,7 +286,7 @@ bool sensor_capture(sensor_pair_t *out, sensor_diag_t *diag)
 }
 
 bool sensor_process(const sensor_pair_t *pair, thermal_frame_t *out,
-                    uint32_t *calculation_us)
+                    float emissivity, uint32_t *calculation_us)
 {
     for(unsigned i=0;i<THERMAL_PIXELS;i++) temperatures[i]=NAN;
     int64_t start=esp_timer_get_time();
@@ -296,7 +296,7 @@ bool sensor_process(const sensor_pair_t *pair, thermal_frame_t *out,
         uint16_t *data=(uint16_t *)pair->raw[i];
         float ambient=MLX90640_GetTa(data,&params);
         if(!isfinite(ambient)) { ok=false; break; }
-        MLX90640_CalculateTo(data,&params,0.95f,ambient-8.0f,temperatures);
+        MLX90640_CalculateTo(data,&params,emissivity,ambient-8.0f,temperatures);
     }
     if(ok) {
         for(unsigned i=0;i<5;i++) {

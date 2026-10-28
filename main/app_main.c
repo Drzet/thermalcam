@@ -124,7 +124,9 @@ static void process_task(void *arg)
     for(;;) {
         if(xQueueReceive(capture_queue,snapshot,portMAX_DELAY)!=pdTRUE) continue;
         uint32_t calculation_us=0;
-        bool ok=sensor_process(snapshot,candidate,&calculation_us);
+        bool ok=sensor_process(snapshot,candidate,
+            __atomic_load_n(&mode, __ATOMIC_RELAXED)==MODE_BODY ? 0.98f : 0.95f,
+            &calculation_us);
         xSemaphoreTake(state_lock,portMAX_DELAY);
         if(calculation_us>counters.max_calculate_us)
             counters.max_calculate_us=calculation_us;

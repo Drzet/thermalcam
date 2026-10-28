@@ -19,4 +19,5 @@ typedef struct {
     int64_t captured_us;
 } sensor_pair_t;
 bool sensor_capture(sensor_pair_t *out, sensor_diag_t *diag);
-bool sensor_process(const sensor_pair_t *pair, thermal_frame_t *out, uint32_t *calculation_us);
+bool sensor_process(const sensor_pair_t *pair, thermal_frame_t *out,
+                    float emissivity, uint32_t *calculation_us);
