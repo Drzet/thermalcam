@@ -306,3 +306,91 @@ void thermal_render(uint8_t *b,const thermal_frame_t *f,thermal_mode_t mode,
     text(b,420,309,"C",0xffffff,1);
     if(stale) text(b,8,300,"STALE",0xff4040,2);
 }
+
+/* The visible/thermal composite samples the *temperatures*, not pre-quantised
+ * palette indices. This preserves Thermalcam's established temperature mapping.
+ * x/y projection and optional mirroring adapt the S3 project's alignment
+ * concept without importing its SPI display renderer or additive tint. */
+static SampleCoord fusion_x[IMAGE_W], fusion_y[IMAGE_H];
+static int fusion_map_w, fusion_map_h;
+
+static void build_fusion_axis(SampleCoord *axis, int extent, int source_extent)
+{
+    for (int p = 0; p < extent; ++p) {
+        float coord = ((float)p + 0.5f) * source_extent / extent - 0.5f;
+        if (coord < 0.0f) coord = 0.0f;
+        if (coord > source_extent - 1) coord = (float)(source_extent - 1);
+        int i0 = (int)coord;
+        int i1 = i0 + 1 < source_extent ? i0 + 1 : i0;
+        float w1 = coord - i0;
+        axis[p] = (SampleCoord) {
+            .i0 = (uint8_t)i0, .i1 = (uint8_t)i1,
+            .w0 = 1.0f - w1, .w1 = w1,
+        };
+    }
+}
+
+void thermal_render_argb_overlay(uint32_t *argb, const thermal_frame_t *frame,
+                                 thermal_mode_t mode, bool stale,
+                                 const fusion_alignment_t *alignment)
+{
+    if (!argb) return;
+    memset(argb, 0, (size_t)IMAGE_W * IMAGE_H * sizeof(*argb));
+    if (!frame || !frame->valid || stale || !alignment || !alignment->alpha ||
+        alignment->width <= 0 || alignment->height <= 0 ||
+        alignment->width > IMAGE_W || alignment->height > IMAGE_H) return;
+
+    const int width = alignment->width, height = alignment->height;
+    if (width != fusion_map_w || height != fusion_map_h) {
+        build_fusion_axis(fusion_x, width, MLX_W);
+        build_fusion_axis(fusion_y, height, MLX_H);
+        fusion_map_w = width; fusion_map_h = height;
+    }
+
+    float low, high;
+    thermal_range(frame, mode, &low, &high);
+    const float colour_scale = (PALETTE_SIZE - 1.0f) / (high - low);
+    const uint32_t *palette = mode == MODE_BODY ? bodyPalette : tempPalette;
+    const int left = alignment->center_x - width / 2;
+    const int top = alignment->center_y - height / 2;
+    const uint32_t alpha = (uint32_t)alignment->alpha << 24;
+
+    for (int y = 0; y < height; ++y) {
+        int dst_y = top + y;
+        if ((unsigned)dst_y >= IMAGE_H) continue;
+        const SampleCoord *yc = &fusion_y[alignment->mirror_y ? height - y - 1 : y];
+        const float *t0 = frame->pixels + yc->i0 * MLX_W;
+        const float *t1 = frame->pixels + yc->i1 * MLX_W;
+        uint32_t *dst = argb + (size_t)dst_y * IMAGE_W;
+        for (int x = 0; x < width; ++x) {
+            int dst_x = left + x;
+            if ((unsigned)dst_x >= IMAGE_W) continue;
+            const SampleCoord *xc = &fusion_x[alignment->mirror_x ? width - x - 1 : x];
+            float a = t0[xc->i0] * xc->w0 + t0[xc->i1] * xc->w1;
+            float b = t1[xc->i0] * xc->w0 + t1[xc->i1] * xc->w1;
+            float temperature = a * yc->w0 + b * yc->w1;
+            dst[dst_x] = alpha | tempToColorFast(temperature, low,
+                                                colour_scale, palette);
+        }
+    }
+}
+
+void thermal_render_fusion_status(uint8_t *bgr, const thermal_frame_t *frame,
+                                  thermal_mode_t mode, bool stale, uint32_t age_ms)
+{
+    static const char *names[] = { "AUTO", "BODY", "HOME" };
+    if (!bgr) return;
+    text(bgr, 8, 5, "FUSION", 0xffffff, 2);
+    text(bgr, 115, 5, names[mode], 0xffffff, 2);
+    if (!frame || !frame->valid) {
+        text(bgr, 245, 5, "NO THERMAL", 0xff4040, 2);
+        return;
+    }
+    char label[32];
+    snprintf(label, sizeof(label), "MIN %.1f", frame->min);
+    text(bgr, 8, 307, label, 0xffffff, 2);
+    snprintf(label, sizeof(label), "MAX %.1f", frame->max);
+    text(bgr, 170, 307, label, 0xffffff, 2);
+    if (stale) text(bgr, 320, 5, "STALE", 0xff4040, 2);
+    else if (age_ms > 500) text(bgr, 330, 5, "OLD", 0xffc000, 2);
+}
