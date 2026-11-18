@@ -6,6 +6,18 @@
 #include "sdkconfig.h"
 #include "visible_camera.h"
 
+/* ESP-IDF leaves disabled boolean Kconfig options undefined. */
+#ifdef CONFIG_THERMALCAM_FUSION_MIRROR_X
+#define FUSION_MIRROR_X true
+#else
+#define FUSION_MIRROR_X false
+#endif
+#ifdef CONFIG_THERMALCAM_FUSION_MIRROR_Y
+#define FUSION_MIRROR_Y true
+#else
+#define FUSION_MIRROR_Y false
+#endif
+
 static const char *TAG = "fusion";
 
 /* Image crop chosen so PPA 5/8 scaling is exact at its 1/16 step:
@@ -44,8 +56,8 @@ esp_err_t fusion_init(fusion_t *fusion)
         .width = CONFIG_THERMALCAM_FUSION_WIDTH,
         .height = CONFIG_THERMALCAM_FUSION_HEIGHT,
         .alpha = CONFIG_THERMALCAM_FUSION_ALPHA,
-        .mirror_x = CONFIG_THERMALCAM_FUSION_MIRROR_X,
-        .mirror_y = CONFIG_THERMALCAM_FUSION_MIRROR_Y,
+        .mirror_x = FUSION_MIRROR_X,
+        .mirror_y = FUSION_MIRROR_Y,
     };
     size_t px = IMAGE_W * IMAGE_H;
     fusion->visible565 = new_buffer(px * sizeof(uint16_t));
