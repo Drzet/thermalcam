@@ -1,0 +1,34 @@
+menu "Thermalcam CSI fusion"
+    config THERMALCAM_FUSION_WIDTH
+        int "Thermal projection width in 480x320 video pixels"
+        default 384
+        range 1 480
+
+    config THERMALCAM_FUSION_HEIGHT
+        int "Thermal projection height in 480x320 video pixels"
+        default 288
+        range 1 320
+
+    config THERMALCAM_FUSION_OFFSET_X
+        int "Thermal projection centre horizontal offset (pixels)"
+        default 0
+        range -480 480
+
+    config THERMALCAM_FUSION_OFFSET_Y
+        int "Thermal projection centre vertical offset (pixels)"
+        default 0
+        range -320 320
+
+    config THERMALCAM_FUSION_ALPHA
+        int "Thermal overlay alpha, 0=visible-only and 255=opaque"
+        default 100
+        range 0 255
+
+    config THERMALCAM_FUSION_MIRROR_X
+        bool "Mirror thermal layer horizontally"
+        default n
+
+    config THERMALCAM_FUSION_MIRROR_Y
+        bool "Mirror thermal layer vertically"
+        default n
+endmenu
