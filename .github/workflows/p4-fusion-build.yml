@@ -13,6 +13,6 @@ jobs:
       - name: Build ESP32-P4 fusion
         uses: espressif/esp-idf-ci-action@v1
         with:
-          esp_idf_version: v5.5.1
+          esp_idf_version: v6.0.3
           target: esp32p4
           command: idf.py build
