@@ -1,0 +1,18 @@
+name: ESP-IDF P4 fusion build
+on:
+  push:
+    branches:
+      - feature/p4-ov5647-fusion
+  workflow_dispatch:
+
+jobs:
+  firmware:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build ESP32-P4 fusion
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v5.5.1
+          target: esp32p4
+          command: idf.py build
