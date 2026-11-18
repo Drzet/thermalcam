@@ -21,3 +21,20 @@ void thermal_range(const thermal_frame_t *frame, thermal_mode_t mode, float *lo,
 /* BGR888 byte order: matches the P4 JPEG encoder's native RGB888 layout. */
 void thermal_render(uint8_t *bgr, const thermal_frame_t *frame, thermal_mode_t mode,
                     bool stale, uint32_t age_ms);
+
+/* Geometry of the thermal projection onto the 480x320 visible frame.
+ * Calibration is working-distance-specific; no optical dimensions are guessed. */
+typedef struct {
+    int center_x, center_y;
+    int width, height;
+    uint8_t alpha;
+    bool mirror_x, mirror_y;
+} fusion_alignment_t;
+
+/* Fully transparent pixels outside the projection. Inside: ARGB8888, with
+ * alpha held in its high byte for the P4 PPA blend foreground. */
+void thermal_render_argb_overlay(uint32_t *argb, const thermal_frame_t *frame,
+                                 thermal_mode_t mode, bool stale,
+                                 const fusion_alignment_t *alignment);
+void thermal_render_fusion_status(uint8_t *bgr, const thermal_frame_t *frame,
+                                  thermal_mode_t mode, bool stale, uint32_t age_ms);
