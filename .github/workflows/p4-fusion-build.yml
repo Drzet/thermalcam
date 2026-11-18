@@ -10,9 +10,24 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Test thermal fusion pixel mapping (host)
+        run: |
+          cc -std=c11 -O2 tests/test_fusion_overlay.c -lm -o /tmp/fusion-overlay-test
+          /tmp/fusion-overlay-test
       - name: Build ESP32-P4 fusion
         uses: espressif/esp-idf-ci-action@v1
         with:
           esp_idf_version: v6.0.3
           target: esp32p4
           command: idf.py build
+      - name: Attach flashable firmware
+        uses: actions/upload-artifact@v4
+        with:
+          name: thermalcam-p4-fusion-esp32p4
+          path: |
+            build/*.bin
+            build/bootloader/*.bin
+            build/partition_table/*.bin
+            build/flash_args
+            build/flasher_args.json
+          if-no-files-found: error
