@@ -16,6 +16,8 @@
 #include "uvc_mode_control.h"
 #include "sensor.h"
 #include "camera_pins.h"
+#include "visible_camera.h"
+#include "fusion.h"
 #include "driver/gpio.h"
 
 #define JPEG_CAPACITY (IMAGE_BYTES)
@@ -265,6 +267,26 @@ void app_main(void)
     ESP_ERROR_CHECK(task_ok==pdPASS?ESP_OK:ESP_ERR_NO_MEM);
     task_ok=xTaskCreate(button_task,"button",4096,NULL,4,NULL);
     ESP_ERROR_CHECK(task_ok==pdPASS?ESP_OK:ESP_ERR_NO_MEM);
+    /* CSI is optional at boot: absent/disconnected visible camera leaves the
+     * proven thermal-only UVC pipeline available unchanged. */
+    static visible_camera_t visible;
+    static fusion_t fusion;
+    bool fusion_ready=false;
+    esp_err_t camera_err=visible_camera_init(&visible);
+    if(camera_err==ESP_OK) {
+        esp_err_t fusion_err=fusion_init(&fusion);
+        if(fusion_err==ESP_OK) {
+            fusion_ready=true;
+            ESP_LOGI(TAG,"OV5647 visible + MLX90640 thermal fusion active");
+        } else {
+            ESP_LOGE(TAG,"PPA fusion unavailable (%s); thermal-only fallback",
+                     esp_err_to_name(fusion_err));
+            visible_camera_close(&visible);
+        }
+    } else {
+        ESP_LOGW(TAG,"CSI unavailable (%s); thermal-only UVC fallback",
+                 esp_err_to_name(camera_err));
+    }
     thermal_frame_t *view=calloc(1,sizeof(*view)); assert(view);
     jpeg_encode_cfg_t cfg={.width=IMAGE_W,.height=IMAGE_H,.src_type=JPEG_ENCODE_IN_FORMAT_RGB888,
         .sub_sample=JPEG_DOWN_SAMPLING_YUV444,.image_quality=80};
@@ -288,7 +310,21 @@ void app_main(void)
         bool stale=fault || age>1000;
 
         int64_t start=esp_timer_get_time();
-        thermal_render(rgb,view,active_mode,stale,age>UINT32_MAX?UINT32_MAX:(uint32_t)age);
+        uint32_t age_ms=age>UINT32_MAX?UINT32_MAX:(uint32_t)age;
+        bool fusion_done=false;
+        if(fusion_ready) {
+            const uint16_t *visible_pixels=NULL;
+            unsigned camera_index=0;
+            if(visible_camera_capture(&visible,&visible_pixels,&camera_index)) {
+                esp_err_t fusion_err=fusion_render(&fusion,rgb,visible_pixels,
+                                                   view,active_mode,stale,age_ms);
+                visible_camera_release(&visible,camera_index);
+                if(fusion_err==ESP_OK) fusion_done=true;
+                else ESP_LOGW(TAG,"PPA fusion frame failed: %s",
+                              esp_err_to_name(fusion_err));
+            }
+        }
+        if(!fusion_done) thermal_render(rgb,view,active_mode,stale,age_ms);
         uint32_t render_us=(uint32_t)(esp_timer_get_time()-start);
         ++renders;
         render_total+=render_us;
@@ -359,6 +395,6 @@ void app_main(void)
             render_max=jpeg_max=publish_max=0;
             video_since=now;
         }
-        vTaskDelayUntil(&next,pdMS_TO_TICKS(1000/16));
+        vTaskDelayUntil(&next,pdMS_TO_TICKS(1000/30));
     }
 }
