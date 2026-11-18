@@ -1,3 +1,9 @@
+> **OV5647 + MLX90640 fusion experiment:** this branch adds Espressif
+> MIPI CSI/ISP capture, PPA scaling and alpha compositing, and 480×320
+> MJPEG UVC output with a 30 fps descriptor. The new pipeline has not yet
+> been compiled or tested on hardware. See [docs/FUSION.md](docs/FUSION.md)
+> for board pin assignments, calibration, build and validation details.
+>
 # ThermalCam P4 — USB thermal webcam
 
 ESP-IDF firmware for Wireless-Tag WT9932P4-TINY and MLX90640. Replaces the
