@@ -85,8 +85,8 @@ the two optical axes are physically separated.
 
 ## Building
 
-Use ESP-IDF **v5.5.1**, as specified by the existing project manifest. The
-branch adds `espressif/esp_video: 0.8.*`, its OV5647 sensor integration, and
+Use ESP-IDF **v6.0.3**, matching the verified I3C-based thermal baseline. The
+branch adds `espressif/esp_video: 2.3.*`, its OV5647 sensor integration, and
 P4 PPA. The managed component is responsible for sensor configuration,
 CSI capture and ISP setup.
 
