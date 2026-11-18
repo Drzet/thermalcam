@@ -138,8 +138,11 @@ bool visible_camera_capture(visible_camera_t *cam, const uint16_t **pixels,
         ESP_LOGE(TAG, "Invalid CSI buffer index %lu", (unsigned long)buf.index);
         return false;
     }
-    if (buf.bytesused < VISIBLE_W * VISIBLE_H * 2) {
-        ESP_LOGW(TAG, "Short CSI frame: %lu bytes", (unsigned long)buf.bytesused);
+    /* Some P4 CSI implementations report the RAW8 payload size in bytesused
+     * even when ISP wrote a full RGB565 buffer. QUERYBUF length was already
+     * checked against the complete RGB565 footprint; trust the error flag. */
+    if (buf.flags & V4L2_BUF_FLAG_ERROR) {
+        ESP_LOGW(TAG, "CSI frame flagged as invalid");
         (void)ioctl(cam->fd, VIDIOC_QBUF, &buf);
         return false;
     }
