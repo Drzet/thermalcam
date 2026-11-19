@@ -1,7 +1,7 @@
 # ESP32-P4 OV5647 + MLX90640 fusion branch
 
-This is a **source implementation**, not a claim of a compiled or hardware-tested
-firmware. It preserves the original phone-connected, high-speed USB MJPEG UVC
+Firmware integration has been compiled in ESP-IDF 6.0.3 CI, but the combined
+camera pipeline and optical registration have not been hardware-tested. It preserves the original phone-connected, high-speed USB MJPEG UVC
 path and the established MLX90640 acquisition/calculation and temperature modes.
 
 ## Hardware and provenance
@@ -67,21 +67,17 @@ algorithm were deliberately not ported.
 
 ## Alignment
 
-The default image projection is 384x288 centered at (240,160). **This is only
-an initial geometric placeholder, not a measured optical calibration.** The
-thermal FOV, visible FOV, lens orientation, optical baseline and operating
-distance must determine the final projection.
+The S3 project's **manual-distance parallax, visible-image crop and zoom
+mechanism** has been ported. The five S3 presets, distance interval 5..500 cm,
+initial 30 cm, reciprocal horizontal shift, constant Y correction and
+independent X/Y zoom are preserved. Working distance can be adjusted at
+runtime using USB UVC contrast, or through an optional ADC potentiometer
+with a chosen GPIO. No ADC pin is assigned by default.
 
-Configure via `idf.py menuconfig` under **Thermalcam CSI fusion**:
-- Projection width and height in output pixels
-- Centre offset X/Y relative to frame centre
-- Alpha, 0..255
-- Horizontal/vertical thermal mirroring
-
-These are currently build-time options, not live phone UI controls. Set them
-using a registration target at the intended 30–40 cm working distance. The
-same alignment cannot perfectly cover objects at different distances when
-the two optical axes are physically separated.
+See [ALIGNMENT.md](ALIGNMENT.md) for the exact equation, controls, physical
+wiring, calibration parameters and instructions. The original S3 numerical
+constants are **not a calibrated optical match** for the P4's OV5647 lens
+and MLX90640 placement.
 
 ## Building
 
@@ -110,10 +106,10 @@ cc -std=c11 -O2 tests/test_fusion_overlay.c -lm -o /tmp/fusion_test
 
 ## Validation still required
 
-No IDF compiler or physical P4 board is available in the current execution
-environment. The branch has **not been built or flashed**. Confirm with the
-target toolchain before deployment, then validate CSI acquisition, Bayer colour
-order, PPA buffer/cache alignment, alpha behaviour, host-negotiated 30 fps,
-actual fused output rate, and lens/thermal registration.
+ESP-IDF 6.0.3 cross-compilation runs in GitHub Actions. The camera hardware
+has **not been flashed or tested**. Validate CSI acquisition, ISP colour order,
+PPA buffer/cache alignment, analogue potentiometer input, UVC contrast
+control, thermal alignment, actual fused framerate and CPU cost of the
+additional S3 visible-image crop.
 
 The existing thermal-only branch was not modified.
