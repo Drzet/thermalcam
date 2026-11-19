@@ -5,6 +5,10 @@ on:
       - feature/p4-ov5647-fusion
   workflow_dispatch:
 
+concurrency:
+  group: fusion-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   firmware:
     runs-on: ubuntu-latest
@@ -14,6 +18,10 @@ jobs:
         run: |
           cc -std=c11 -O2 tests/test_fusion_overlay.c -lm -o /tmp/fusion-overlay-test
           /tmp/fusion-overlay-test
+      - name: Test S3 parallax and crop (host)
+        run: |
+          cc -std=c11 -O2 tests/test_s3_alignment.c main/alignment_s3.c -o /tmp/s3-alignment-test
+          /tmp/s3-alignment-test
       - name: Build ESP32-P4 fusion
         uses: espressif/esp-idf-ci-action@v1
         with:
