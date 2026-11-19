@@ -4,6 +4,7 @@
 #include "esp_err.h"
 #include "driver/ppa.h"
 #include "thermal.h"
+#include "alignment_s3.h"
 
 /* PPA SRM: crop OV5647 800x640 to central 768x512 (3:2), scale 5/8
  * to 480x320. PPA BLEND: RGB565 visible + per-pixel-alpha ARGB thermal. */
@@ -11,6 +12,9 @@ typedef struct {
     ppa_client_handle_t scale_client;
     ppa_client_handle_t blend_client;
     uint16_t *visible565;
+    uint16_t *registered565;
+    uint16_t xmap[IMAGE_W], ymap[IMAGE_H];
+    alignment_s3_t registration;
     uint16_t *mixed565;
     uint32_t *thermal_argb;
     fusion_alignment_t align;
@@ -23,5 +27,6 @@ esp_err_t fusion_init(fusion_t *fusion);
 esp_err_t fusion_render(fusion_t *fusion, uint8_t *bgr888,
                         const uint16_t *camera800x640,
                         const thermal_frame_t *thermal,
-                        thermal_mode_t mode, bool stale, uint32_t age_ms);
+                        thermal_mode_t mode, bool stale, uint32_t age_ms,
+                        int distance_cm);
 void fusion_deinit(fusion_t *fusion);
