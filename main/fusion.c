@@ -41,6 +41,7 @@ void fusion_deinit(fusion_t *fusion)
     if (fusion->scale_client) ppa_unregister_client(fusion->scale_client);
     if (fusion->blend_client) ppa_unregister_client(fusion->blend_client);
     free(fusion->visible565);
+    free(fusion->registered565);
     free(fusion->mixed565);
     free(fusion->thermal_argb);
     memset(fusion, 0, sizeof(*fusion));
@@ -59,11 +60,29 @@ esp_err_t fusion_init(fusion_t *fusion)
         .mirror_x = FUSION_MIRROR_X,
         .mirror_y = FUSION_MIRROR_Y,
     };
+    /* Direct port of the S3 optical model. Initial values must be
+     * recalibrated for the P4/OV5647 camera and physical spacing. */
+    alignment_s3_init(&fusion->registration,
+                      CONFIG_THERMALCAM_ALIGN_BASE_X100,
+                      CONFIG_THERMALCAM_ALIGN_BASE_Y100,
+                      CONFIG_THERMALCAM_ALIGN_ZOOM_X,
+                      CONFIG_THERMALCAM_ALIGN_ZOOM_Y,
+                      CONFIG_THERMALCAM_ALIGN_COEFF,
+                      CONFIG_THERMALCAM_ALIGN_DEFAULT_CM);
+    alignment_s3_set_offsets(&fusion->registration,
+                             CONFIG_THERMALCAM_ALIGN_OFFSET_X100,
+                             CONFIG_THERMALCAM_ALIGN_OFFSET_Y100,
+                             CONFIG_THERMALCAM_ALIGN_OFFSET_ZX,
+                             CONFIG_THERMALCAM_ALIGN_OFFSET_ZY);
+    alignment_s3_build_maps(&fusion->registration, IMAGE_W, IMAGE_H,
+                            fusion->xmap, fusion->ymap);
     size_t px = IMAGE_W * IMAGE_H;
     fusion->visible565 = new_buffer(px * sizeof(uint16_t));
+    fusion->registered565 = new_buffer(px * sizeof(uint16_t));
     fusion->mixed565 = new_buffer(px * sizeof(uint16_t));
     fusion->thermal_argb = (uint32_t *)new_buffer(px * sizeof(uint32_t));
-    if (!fusion->visible565 || !fusion->mixed565 || !fusion->thermal_argb) {
+    if (!fusion->visible565 || !fusion->registered565 ||
+        !fusion->mixed565 || !fusion->thermal_argb) {
         fusion_deinit(fusion);
         return ESP_ERR_NO_MEM;
     }
@@ -95,7 +114,8 @@ static void to_bgr888(uint8_t *dest, const uint16_t *src)
 esp_err_t fusion_render(fusion_t *fusion, uint8_t *bgr888,
                         const uint16_t *camera800x640,
                         const thermal_frame_t *thermal,
-                        thermal_mode_t mode, bool stale, uint32_t age_ms)
+                        thermal_mode_t mode, bool stale, uint32_t age_ms,
+                        int distance_cm)
 {
     if (!fusion || !bgr888 || !camera800x640 || !thermal)
         return ESP_ERR_INVALID_ARG;
@@ -120,6 +140,21 @@ esp_err_t fusion_render(fusion_t *fusion, uint8_t *bgr888,
     esp_err_t err = ppa_do_scale_rotate_mirror(fusion->scale_client, &scale);
     if (err != ESP_OK) return err;
 
+    /* The S3 mechanism translates and zooms the VISIBLE image.
+     * A separate 480x320 crop preserves S3 nearest-neighbour sampling and
+     * full integer-percentage zoom; the thermal overlay remains fixed. */
+    if (fusion->registration.distance_cm != distance_cm) {
+        alignment_s3_set_distance(&fusion->registration, distance_cm);
+        alignment_s3_build_maps(&fusion->registration, IMAGE_W, IMAGE_H,
+                                fusion->xmap, fusion->ymap);
+    }
+    for (int y = 0; y < IMAGE_H; ++y) {
+        const uint16_t *s = fusion->visible565 +
+                            (size_t)fusion->ymap[y] * IMAGE_W;
+        uint16_t *d = fusion->registered565 + (size_t)y * IMAGE_W;
+        for (int x = 0; x < IMAGE_W; ++x) d[x] = s[fusion->xmap[x]];
+    }
+
     /* Thermal is acquired at 8 Hz. Regenerate its projected colour layer
      * only on a new sensor frame, range-mode change or stale-state change;
      * reuse it over intermediate 30 Hz visible frames. */
@@ -134,7 +169,7 @@ esp_err_t fusion_render(fusion_t *fusion, uint8_t *bgr888,
 
     ppa_blend_oper_config_t blend = {
         .in_bg = {
-            .buffer = fusion->visible565,
+            .buffer = fusion->registered565,
             .pic_w = IMAGE_W, .pic_h = IMAGE_H,
             .block_w = IMAGE_W, .block_h = IMAGE_H,
             .blend_cm = PPA_BLEND_COLOR_MODE_RGB565,
@@ -160,6 +195,7 @@ esp_err_t fusion_render(fusion_t *fusion, uint8_t *bgr888,
     if (err != ESP_OK) return err;
 
     to_bgr888(bgr888, fusion->mixed565);
-    thermal_render_fusion_status(bgr888, thermal, mode, stale, age_ms);
+    thermal_render_fusion_status(bgr888, thermal, mode, stale, age_ms,
+                                 fusion->registration.distance_cm);
     return ESP_OK;
 }
