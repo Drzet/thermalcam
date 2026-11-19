@@ -37,4 +37,5 @@ void thermal_render_argb_overlay(uint32_t *argb, const thermal_frame_t *frame,
                                  thermal_mode_t mode, bool stale,
                                  const fusion_alignment_t *alignment);
 void thermal_render_fusion_status(uint8_t *bgr, const thermal_frame_t *frame,
-                                  thermal_mode_t mode, bool stale, uint32_t age_ms);
+                                  thermal_mode_t mode, bool stale, uint32_t age_ms,
+                                  int distance_cm);
