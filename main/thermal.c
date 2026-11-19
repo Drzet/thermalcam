@@ -376,12 +376,16 @@ void thermal_render_argb_overlay(uint32_t *argb, const thermal_frame_t *frame,
 }
 
 void thermal_render_fusion_status(uint8_t *bgr, const thermal_frame_t *frame,
-                                  thermal_mode_t mode, bool stale, uint32_t age_ms)
+                                  thermal_mode_t mode, bool stale, uint32_t age_ms,
+                                  int distance_cm)
 {
     static const char *names[] = { "AUTO", "BODY", "HOME" };
     if (!bgr) return;
     text(bgr, 8, 5, "FUSION", 0xffffff, 2);
     text(bgr, 115, 5, names[mode], 0xffffff, 2);
+    char zlabel[24];
+    snprintf(zlabel,sizeof(zlabel),"Z %dCM",distance_cm);
+    text(bgr,245,27,zlabel,0xffffff,1);
     if (!frame || !frame->valid) {
         text(bgr, 245, 5, "NO THERMAL", 0xff4040, 2);
         return;
