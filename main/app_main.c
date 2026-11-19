@@ -18,6 +18,8 @@
 #include "camera_pins.h"
 #include "visible_camera.h"
 #include "fusion.h"
+#include "distance_pot.h"
+#include "alignment_s3.h"
 #include "driver/gpio.h"
 
 #define JPEG_CAPACITY (IMAGE_BYTES)
@@ -26,6 +28,7 @@ static SemaphoreHandle_t state_lock,jpeg_lock;
 static QueueHandle_t capture_queue;
 static thermal_frame_t latest;
 static thermal_mode_t mode;
+static int alignment_distance_cm=CONFIG_THERMALCAM_ALIGN_DEFAULT_CM;
 
 /* UVC control callback and physical button share the same atomic mode. */
 uint8_t thermalcam_uvc_get_mode(void)
@@ -37,6 +40,16 @@ void thermalcam_uvc_set_mode(uint8_t value)
 {
     if (value < MODE_COUNT)
         __atomic_store_n(&mode, (thermal_mode_t)value, __ATOMIC_RELAXED);
+}
+
+uint16_t thermalcam_uvc_get_distance(void)
+{
+    return (uint16_t)__atomic_load_n(&alignment_distance_cm,__ATOMIC_RELAXED);
+}
+void thermalcam_uvc_set_distance(uint16_t cm)
+{
+    if(cm>=S3_MIN_CM && cm<=S3_MAX_CM)
+        __atomic_store_n(&alignment_distance_cm,(int)cm,__ATOMIC_RELAXED);
 }
 
 static bool acquisition_error=true;
@@ -259,6 +272,7 @@ void app_main(void)
     ESP_ERROR_CHECK(uvc_device_config(0,&uvc));
     thermalcam_uvc_control_init(); /* Retain the wrapped UVC handlers at link time. */
     ESP_ERROR_CHECK(uvc_device_init());
+    distance_pot_start();
     ESP_LOGI(TAG,"UVC compiled descriptor: MJPEG %dx%d at %d fps",IMAGE_W,IMAGE_H,
              CONFIG_UVC_CAM1_FRAMERATE);
     BaseType_t task_ok=xTaskCreate(sensor_task,"sensor",12288,NULL,5,NULL);
@@ -317,7 +331,8 @@ void app_main(void)
             unsigned camera_index=0;
             if(visible_camera_capture(&visible,&visible_pixels,&camera_index)) {
                 esp_err_t fusion_err=fusion_render(&fusion,rgb,visible_pixels,
-                                                   view,active_mode,stale,age_ms);
+                                                   view,active_mode,stale,age_ms,
+                                                   thermalcam_uvc_get_distance());
                 visible_camera_release(&visible,camera_index);
                 if(fusion_err==ESP_OK) fusion_done=true;
                 else ESP_LOGW(TAG,"PPA fusion frame failed: %s",
