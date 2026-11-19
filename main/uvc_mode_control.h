@@ -8,3 +8,5 @@
 void thermalcam_uvc_control_init(void);
 uint8_t thermalcam_uvc_get_mode(void);
 void thermalcam_uvc_set_mode(uint8_t value);
+uint16_t thermalcam_uvc_get_distance(void);
+void thermalcam_uvc_set_distance(uint16_t value);
