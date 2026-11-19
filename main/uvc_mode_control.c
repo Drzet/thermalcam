@@ -17,12 +17,15 @@
 #include "tusb.h"
 #include "device/usbd_pvt.h"
 #include "uvc_mode_control.h"
+#include "alignment_s3.h"
+#include "sdkconfig.h"
 
 #define VC_INTERFACE        0u
 #define CAMERA_TERMINAL_ID  1u
 #define OUTPUT_TERMINAL_ID  2u
 #define PROCESSING_UNIT_ID  3u
 #define PU_BRIGHTNESS       2u
+#define PU_CONTRAST         3u
 #define CONFIG_BUFFER_SIZE  512u
 
 #define CS_INTERFACE        0x24u
@@ -33,13 +36,13 @@
 
 static const char *TAG = "uvc_brightness";
 
-/* UVC 1.5 PU: brightness is bmControls bit 0; all other PU controls off.
+/* UVC 1.5 PU: brightness and contrast are bmControls bits 0 and 1.
  * bControlSize=2, bmVideoStandards=0. Unit 3 sits between camera 1
  * and streaming output terminal 2. */
 static const uint8_t brightness_pu[] = {
     12, CS_INTERFACE, VC_PROCESSING_UNIT, PROCESSING_UNIT_ID,
     CAMERA_TERMINAL_ID, 0, 0,  /* source and wMaxMultiplier */
-    2, 1, 0,                 /* bControlSize, bmControls */
+    2, 3, 0,                 /* bControlSize, bmControls */
     0, 0                     /* iProcessing, bmVideoStandards */
 };
 
@@ -109,13 +112,14 @@ uint8_t const *__wrap_tud_descriptor_configuration_cb(uint8_t index)
     /* Output terminal's bSourceID points at our inserted PU. */
     config_with_pu[output + sizeof(brightness_pu) + 7] = PROCESSING_UNIT_ID;
     config_ready = true;
-    ESP_LOGI(TAG, "UVC PU brightness enabled: AUTO=0 BODY=1 HOME=2");
+    ESP_LOGI(TAG, "UVC brightness=mode (0..2), contrast=distance (5..500cm)");
     return config_with_pu;
 }
 
 /* EP0 control buffer must survive SETUP and DATA/ACK stages. TinyUSB
  * serialises control transfers, so one static buffer is sufficient. */
 static uint16_t brightness_word;
+static uint16_t distance_word;
 static uint8_t brightness_info;
 
 void thermalcam_uvc_control_init(void)
@@ -123,60 +127,59 @@ void thermalcam_uvc_control_init(void)
     /* Call from app_main before USB is initialized. Also keeps the linker
      * from discarding this translation unit and its --wrap entry points. */
     brightness_word = thermalcam_uvc_get_mode();
+    distance_word = thermalcam_uvc_get_distance();
 }
 
 bool __wrap_videod_control_xfer_cb(uint8_t rhport, uint8_t stage,
                                   tusb_control_request_t const *request)
 {
-    if (request->bmRequestType_bit.type != TUSB_REQ_TYPE_CLASS ||
-        request->bmRequestType_bit.recipient != TUSB_REQ_RCPT_INTERFACE ||
-        request->wIndex != ((PROCESSING_UNIT_ID << 8) | VC_INTERFACE) ||
-        request->wValue != (PU_BRIGHTNESS << 8))
-        return __real_videod_control_xfer_cb(rhport, stage, request);
+    bool mode_control=request->wValue==(PU_BRIGHTNESS<<8);
+    bool distance_control=request->wValue==(PU_CONTRAST<<8);
+    if(request->bmRequestType_bit.type!=TUSB_REQ_TYPE_CLASS ||
+       request->bmRequestType_bit.recipient!=TUSB_REQ_RCPT_INTERFACE ||
+       request->wIndex!=((PROCESSING_UNIT_ID<<8)|VC_INTERFACE) ||
+       (!mode_control && !distance_control))
+        return __real_videod_control_xfer_cb(rhport,stage,request);
+    if(!config_ready)return false;
 
-    if (!config_ready) return false;
-
-    if (request->bRequest == VIDEO_REQUEST_SET_CUR) {
-        if (request->wLength != 2) return false;
-        if (stage == CONTROL_STAGE_SETUP)
-            return tud_control_xfer(rhport, request, &brightness_word,
-                                    sizeof(brightness_word));
-        if (stage == CONTROL_STAGE_DATA) {
-            if (brightness_word >= THERMAL_MODE_COUNT) return false;
-            thermalcam_uvc_set_mode((uint8_t)brightness_word);
-            ESP_LOGI(TAG, "UVC brightness %u -> thermal mode %u",
-                     (unsigned)brightness_word, (unsigned)brightness_word);
+    uint16_t *value=distance_control?&distance_word:&brightness_word;
+    if(request->bRequest==VIDEO_REQUEST_SET_CUR) {
+        if(request->wLength!=2)return false;
+        if(stage==CONTROL_STAGE_SETUP)
+            return tud_control_xfer(rhport,request,value,sizeof(*value));
+        if(stage==CONTROL_STAGE_DATA) {
+            if(distance_control) {
+                if(distance_word<S3_MIN_CM||distance_word>S3_MAX_CM)return false;
+                thermalcam_uvc_set_distance(distance_word);
+            } else {
+                if(brightness_word>=THERMAL_MODE_COUNT)return false;
+                thermalcam_uvc_set_mode((uint8_t)brightness_word);
+            }
         }
         return true;
     }
 
-    if (stage != CONTROL_STAGE_SETUP) return true;
-
-    switch (request->bRequest) {
+    if(stage!=CONTROL_STAGE_SETUP)return true;
+    switch(request->bRequest) {
     case VIDEO_REQUEST_GET_INFO:
-        if (request->wLength != 1) return false;
-        brightness_info = 0x03; /* supports GET_CUR and SET_CUR */
-        return tud_control_xfer(rhport, request, &brightness_info, 1);
+        if(request->wLength!=1)return false;
+        brightness_info=0x03;
+        return tud_control_xfer(rhport,request,&brightness_info,1);
     case VIDEO_REQUEST_GET_LEN:
-        brightness_word = 2;
-        break;
+        *value=2;break;
     case VIDEO_REQUEST_GET_CUR:
-        brightness_word = thermalcam_uvc_get_mode();
+        *value=distance_control?thermalcam_uvc_get_distance():thermalcam_uvc_get_mode();
         break;
     case VIDEO_REQUEST_GET_MIN:
+        *value=distance_control?S3_MIN_CM:0;break;
     case VIDEO_REQUEST_GET_DEF:
-        brightness_word = 0;
-        break;
+        *value=distance_control?CONFIG_THERMALCAM_ALIGN_DEFAULT_CM:0;break;
     case VIDEO_REQUEST_GET_MAX:
-        brightness_word = THERMAL_MODE_COUNT - 1;
-        break;
+        *value=distance_control?S3_MAX_CM:THERMAL_MODE_COUNT-1;break;
     case VIDEO_REQUEST_GET_RES:
-        brightness_word = 1;
-        break;
-    default:
-        return false;
+        *value=1;break;
+    default:return false;
     }
-    if (request->wLength != 2) return false;
-    return tud_control_xfer(rhport, request, &brightness_word,
-                            sizeof(brightness_word));
+    if(request->wLength!=2)return false;
+    return tud_control_xfer(rhport,request,value,sizeof(*value));
 }
