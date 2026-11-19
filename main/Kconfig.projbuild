@@ -31,4 +31,75 @@ menu "Thermalcam CSI fusion"
     config THERMALCAM_FUSION_MIRROR_Y
         bool "Mirror thermal layer vertically"
         default n
+    menu "S3 manual-distance registration"
+        config THERMALCAM_ALIGN_DEFAULT_CM
+            int "Initial S3 working distance (cm)"
+            default 30
+            range 5 500
+        config THERMALCAM_ALIGN_BASE_X100
+            int "S3 base horizontal shift, hundredths of 320-wide reference pixel"
+            default 125
+            range -9000 9000
+        config THERMALCAM_ALIGN_BASE_Y100
+            int "S3 base vertical shift, hundredths of 240-high reference pixel"
+            default -670
+            range -9000 9000
+        config THERMALCAM_ALIGN_ZOOM_X
+            int "S3 visible camera horizontal zoom (%)"
+            default 126
+            range 100 250
+        config THERMALCAM_ALIGN_ZOOM_Y
+            int "S3 visible camera vertical zoom (%)"
+            default 126
+            range 100 250
+        config THERMALCAM_ALIGN_COEFF
+            int "S3 horizontal parallax coefficient (hundredths of reference px x cm)"
+            default 35654
+            range 0 1000000
+        config THERMALCAM_ALIGN_OFFSET_X100
+            int "S3 additional horizontal shift, hundredths of reference px"
+            default 0
+            range -9000 9000
+        config THERMALCAM_ALIGN_OFFSET_Y100
+            int "S3 additional vertical shift, hundredths of reference px"
+            default 0
+            range -9000 9000
+        config THERMALCAM_ALIGN_OFFSET_ZX
+            int "S3 additional horizontal zoom percentage points"
+            default 0
+            range -50 50
+        config THERMALCAM_ALIGN_OFFSET_ZY
+            int "S3 additional vertical zoom percentage points"
+            default 0
+            range -50 50
+    endmenu
+    menu "Optional analogue working-distance potentiometer"
+        config THERMALCAM_ALIGN_POT_GPIO
+            int "Potentiometer ADC GPIO (-1 disables; permitted 16..22)"
+            default -1
+            range -1 22
+            help
+                Only P4 ADC1 pins GPIO16..22 are supported. Select a pin
+                actually accessible and available on your board.
+                No GPIO is assigned by default.
+        config THERMALCAM_ALIGN_POT_ADC_MIN
+            int "ADC reading at low endpoint"
+            default 0
+            range 0 4095
+        config THERMALCAM_ALIGN_POT_ADC_MAX
+            int "ADC reading at high endpoint"
+            default 4095
+            range 0 4095
+        config THERMALCAM_ALIGN_POT_MIN_CM
+            int "Minimum potentiometer distance cm"
+            default 5
+            range 5 500
+        config THERMALCAM_ALIGN_POT_MAX_CM
+            int "Maximum potentiometer distance cm"
+            default 500
+            range 5 500
+        config THERMALCAM_ALIGN_POT_REVERSE
+            bool "Reverse potentiometer rotation"
+            default n
+    endmenu
 endmenu
